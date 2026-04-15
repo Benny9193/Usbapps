@@ -1,0 +1,34 @@
+; Portable Recon Toolkit - AutoRun / AutoPlay descriptor.
+;
+; When the USB drive is mounted on Windows, AutoPlay reads this file
+; to learn the drive label, icon, and the command it should offer to
+; run. On modern Windows (7 and later) AutoRun no longer executes
+; removable media automatically for security reasons, but AutoPlay
+; will surface this entry as the top option in the pop-up dialog,
+; and a single click launches the elevated command prompt.
+;
+; On systems where AutoRun from USB is still enabled (older Windows,
+; kiosks, group-policy-enabled hosts), LaunchAdminCmd.bat runs
+; directly and triggers UAC on its own.
+
+[AutoRun]
+label=Portable Recon Toolkit
+icon=LaunchAdminCmd.bat
+open=LaunchAdminCmd.bat
+shellexecute=LaunchAdminCmd.bat
+action=Launch Portable Recon Toolkit (Administrator CMD)
+UseAutoPlay=1
+
+[Content]
+MusicFiles=false
+PictureFiles=false
+VideoFiles=false
+
+[shell\runas]
+; Right-click -> "Run as administrator" entry on the drive itself.
+action=Open Portable Recon Toolkit (Administrator CMD)
+command=LaunchAdminCmd.bat
+
+[shell]
+; Default action when the drive icon is double-clicked.
+shell=runas

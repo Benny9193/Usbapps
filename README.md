@@ -17,6 +17,8 @@ served from a tiny local HTTP server.
 ```
 Usbapps/
   Launch.bat          Windows one-click launcher (starts the dashboard)
+  LaunchAdminCmd.bat  Self-elevating admin command prompt launcher
+  autorun.inf         Windows AutoPlay descriptor (opens admin CMD)
   launch.sh           Linux / macOS launcher
   recon.py            CLI entry point
   lib/                Toolkit modules (stdlib-only Python)
@@ -55,18 +57,42 @@ Usbapps/
 
 ### Windows
 
-1. Copy the `Usbapps/` folder onto your USB drive.
+1. Copy the `Usbapps/` folder onto the **root** of your USB drive (so
+   `autorun.inf` and `LaunchAdminCmd.bat` sit at `X:\`).
 2. (Optional) Drop portable Nmap into `bin\nmap.exe` and portable Python under
    `bin\python\`. See `bin/README.txt` for where to get them.
-3. Double-click `Launch.bat` - it opens the dashboard at
-   <http://127.0.0.1:8787/>.
-4. From a separate terminal run scans:
+3. Plug the drive in. Windows AutoPlay surfaces **"Launch Portable Recon
+   Toolkit (Administrator CMD)"** as the top option - click it and
+   approve the UAC prompt to drop straight into an elevated command
+   prompt rooted at the drive. (On hosts where AutoRun from USB is still
+   enabled, the admin prompt opens without any click.)
+4. From that elevated prompt, run scans or start the dashboard:
    ```
+   Launch.bat                                          :: opens the dashboard
    Launch.bat full example.com --wordlist config\wordlists\subdomains.txt
    Launch.bat scan 10.0.0.1
    Launch.bat dns example.com
    ```
    Refresh the browser (it also auto-refreshes every 10s) to see new sessions.
+
+> **Why the AutoPlay click?** Since Windows 7, Microsoft disabled
+> silent AutoRun execution from removable drives as an anti-malware
+> measure. `autorun.inf` still controls the drive's label, icon, and
+> the entry Windows advertises in the AutoPlay dialog, so a single
+> click launches `LaunchAdminCmd.bat`, which then self-elevates via
+> UAC. If you need zero-click behavior on a specific machine you
+> trust, either re-enable AutoRun through Group Policy
+> (`gpedit.msc` -> Computer Configuration -> Administrative Templates
+> -> Windows Components -> AutoPlay Policies) or register a Task
+> Scheduler trigger on drive-arrival events.
+
+You can also launch the admin prompt manually at any time by
+double-clicking `LaunchAdminCmd.bat`, or by right-clicking it and
+choosing **Run as administrator**. The script checks its own token
+with `net session`, re-launches itself via
+`Start-Process -Verb RunAs` if it was started unelevated, and then
+hands you an interactive `cmd.exe` session with the toolkit
+directories prepended to `PATH`.
 
 ### Linux / macOS
 
