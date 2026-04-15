@@ -33,6 +33,7 @@ Usbapps/
     scheduler.py      Recurring scans + auto-diff (stdlib sched + thread)
     exporters.py      Markdown / HTML / CSV renderers
     netproxy.py       Optional HTTP CONNECT proxy client
+    crypto.py         Password-based AEAD for results (scrypt + HMAC-SHA256)
   dashboard/
     index.html        Single-page UI
     style.css         Dark hacker-style theme
@@ -114,6 +115,13 @@ recon export <session-id> [--format {md,html,csv}] [-o FILE]
 recon delete <session-id> [<session-id> ...]
 recon purge  --older-than-days N [--dry-run]
 
+recon encrypt [<session-id|path> ...] [--all | --older-than-days N]
+              [--password-file FILE] [--output-dir DIR] [--keep]
+recon decrypt [<session-id|path> ...] [--all | --older-than-days N]
+              [--password-file FILE] [--output-dir DIR] [--keep]
+recon rekey   [<session-id|path> ...] [--all | --older-than-days N]
+              [--old-password-file FILE] [--new-password-file FILE]
+
 recon schedule add    TARGET {scan,dns,full} --every 30s|5m|1h|1d
                       [--profile ...] [--wordlist PATH] [--ports PORTS]
                       [--server IP] [--no-nmap] [--disabled]
@@ -183,6 +191,107 @@ Run the scheduler without the HTTP UI:
 python3 recon.py schedule daemon          # foreground, Ctrl+C to stop
 python3 recon.py schedule run <id>        # trigger once, now
 ```
+
+## Encrypting results at rest
+
+Reconnaissance output is sensitive: open ports, internal hostnames,
+WHOIS contacts, subdomain inventories. When the toolkit lives on a USB
+drive, that drive can be lost, stolen, or borrowed. `recon encrypt`
+turns any session into a self-contained, password-protected blob you
+can safely leave on shared media.
+
+```bash
+# Encrypt a session by id (matches the JSON and any nmap XML siblings)
+python3 recon.py encrypt 20260415-094812_full_example.com
+
+# Or point at any file directly, and stash the ciphertext elsewhere
+python3 recon.py encrypt results/scan.json -o /mnt/usb/encrypted/
+
+# Decrypt it back in place
+python3 recon.py decrypt 20260415-094812_full_example.com
+```
+
+The password is read from `--password-file PATH`, the `RECON_PASSWORD`
+environment variable, or an interactive `getpass` prompt (with
+confirmation on encrypt). By default the source file is removed once
+its `.enc` counterpart is written; pass `--keep` to leave the
+plaintext in place.
+
+The on-disk format is built on stdlib primitives so it works with the
+portable Python builds the rest of the toolkit targets:
+
+| Component       | Construction                                       |
+|-----------------|----------------------------------------------------|
+| Key derivation  | `hashlib.scrypt`, N=2^14 r=8 p=1, 16-byte salt     |
+| Cipher          | HMAC-SHA256 in counter mode (PRF stream cipher)    |
+| Authentication  | HMAC-SHA256 over `header \|\| ciphertext` (encrypt-then-MAC) |
+| Nonce           | 16 random bytes per file                           |
+| Tag             | 32 bytes, verified in constant time before decrypt |
+
+A wrong password, tampered ciphertext, or even a single flipped salt
+byte is rejected with `InvalidCiphertext` before any plaintext is
+produced. See `lib/crypto.py` for the format header and proof
+sketch.
+
+### Bulk operations and rotation
+
+```bash
+# Encrypt every plaintext session under results/ in one shot
+RECON_PASSWORD=hunter2 python3 recon.py encrypt --all
+
+# Rotate only the stale stuff (mirrors `recon purge`)
+python3 recon.py encrypt --older-than-days 30 --password-file pw.txt
+
+# Bulk decrypt the same way
+RECON_PASSWORD=hunter2 python3 recon.py decrypt --all
+
+# Change the password without ever writing plaintext to disk.
+# Old password is read from --old-password-file (or RECON_OLD_PASSWORD,
+# or interactive prompt); new one with --new-password-file (or
+# RECON_NEW_PASSWORD, or interactive prompt with confirmation).
+python3 recon.py rekey --all \
+    --old-password-file old.txt --new-password-file new.txt
+```
+
+`recon rekey` decrypts each blob into a Python `bytes` object,
+re-encrypts it with the new key, and atomically replaces the file via
+`os.replace`. The plaintext never touches disk and the source file is
+only overwritten after the new password's tag has been computed, so a
+wrong old password leaves the original file untouched.
+
+### Always-on encryption
+
+To keep sessions from ever landing as plaintext on the USB drive:
+
+```toml
+# config/recon.toml
+encrypt_results = true
+```
+
+```bash
+export RECON_PASSWORD=hunter2
+python3 recon.py scan example.com         # writes <session>.json.enc
+python3 recon.py dashboard --scheduler    # scheduler honors RECON_PASSWORD too
+```
+
+When `encrypt_results = true` is set and `RECON_PASSWORD` is missing,
+`recon scan/dns/whois/full` refuse to run rather than silently leaving
+plaintext on disk. `recon list` surfaces encrypted entries with an
+`[enc]` marker (the timestamp, scan type, and target are recovered
+from the canonical filename pattern even when the body is opaque).
+`differ` and the `export` command transparently decrypt encrypted
+sessions when `RECON_PASSWORD` is set, so `recon diff` and
+`recon export` keep working under always-on mode.
+
+### Known gaps
+
+- The dashboard does not yet decrypt sessions on the fly. Sessions
+  encrypted at rest still appear in the sidebar (with the `encrypted`
+  flag) but clicking through requires `recon decrypt` first.
+- Nmap XML siblings (`<session>.nmap.xml`) are encrypted by
+  `recon encrypt <session-id>` but are not yet covered by the
+  always-on `save_session` path. Run `recon encrypt --all`
+  periodically to sweep them up.
 
 ## Configuration file
 

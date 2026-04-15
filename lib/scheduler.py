@@ -1,4 +1,4 @@
-"""Recurring scan scheduler with auto-diff.
+"""Recurring scan scheduler with auto-diff and optional auto-encrypt.
 
 Persists entries to ``config/schedules.json`` and drives them from a
 lightweight ``sched.scheduler`` plus a single daemon thread. Each fire
@@ -22,6 +22,7 @@ Design notes
   effect without bouncing the process.
 """
 import json
+import os
 import re
 import sched
 import threading
@@ -366,6 +367,12 @@ def run_once(entry):
     session = report.new_session(target, workflow)
     session["scheduled"] = {"schedule_id": sid}
 
+    # Honor RECON_PASSWORD for at-rest encryption of scheduled sessions.
+    # The scheduler runs unattended, so an env-var-only opt-in is the
+    # simplest deployment knob: set RECON_PASSWORD in the launcher and
+    # every fire lands as <session>.json.enc instead of plaintext.
+    encrypt_password = os.environ.get("RECON_PASSWORD") or None
+
     status = "ok"
     try:
         EXECUTORS[workflow](session, target, opts)
@@ -375,12 +382,12 @@ def run_once(entry):
         status = "error"
 
     # Save once so the differ can read us back from disk.
-    report.save_session(session)
+    report.save_session(session, encrypt_password=encrypt_password)
 
     # Compare against the previous peer for this target.
     diff_result = auto_diff(session)
     if diff_result is not None:
-        report.save_session(session)
+        report.save_session(session, encrypt_password=encrypt_password)
         if status == "ok":
             status = "unchanged" if _diff_is_empty(diff_result) else "changed"
         p = diff_result["ports"]
