@@ -1,0 +1,31 @@
+# Portable Recon Toolkit - default settings.
+#
+# This file is optional. When present, the recon CLI reads it at startup
+# and folds the values into argparse defaults *before* parsing the command
+# line, so explicit flags always win.
+#
+# Keys mirror argparse dest names. Unknown keys are ignored silently.
+# Requires Python 3.11+ for tomllib; older interpreters will skip the file
+# with a single warning and use built-in defaults.
+
+[scan]
+# profile = "default"
+# ports = "1-1024"
+# no_nmap = false
+
+[dns]
+# server = "1.1.1.1"
+# wordlist = "config/wordlists/subdomains.txt"
+
+[full]
+# profile = "default"
+# wordlist = "config/wordlists/subdomains.txt"
+
+[dashboard]
+# host = "127.0.0.1"
+# port = 8787
+# token = ""                         # set to enforce bearer-token auth
+# auth = false                       # true => generate a random token
+
+[logging]
+# log_file = "results/recon.log"
