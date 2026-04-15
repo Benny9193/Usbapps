@@ -364,7 +364,13 @@ def cmd_purge(args):
 
 
 def cmd_dashboard(args):
-    dashboard.serve(host=args.host, port=args.port, open_browser=not args.no_browser)
+    dashboard.serve(
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+        token=args.token,
+        require_auth=args.auth,
+    )
     return 0
 
 
@@ -434,6 +440,9 @@ def build_parser():
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8787)
     p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--token", help="Require this bearer token / cookie for access")
+    p.add_argument("--auth", action="store_true",
+                   help="Generate a random token and print it (implies auth)")
     p.set_defaults(func=cmd_dashboard)
 
     p = sub.add_parser("list", help="List previous scan sessions")
