@@ -15,15 +15,8 @@ from . import report
 
 
 def _load(session_ref):
-    path = Path(session_ref)
-    if not path.exists():
-        candidate = report.RESULTS / f"{session_ref}.json"
-        if candidate.exists():
-            path = candidate
-        else:
-            raise FileNotFoundError(f"no such session: {session_ref}")
-    with open(path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+    """Load a session, transparently decrypting `.json.enc` when possible."""
+    return report.load_session(session_ref)
 
 
 # ---------------------------------------------------------------------------

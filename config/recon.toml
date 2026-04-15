@@ -33,3 +33,11 @@
 
 [logging]
 # log_file = "results/recon.log"
+
+[encryption]
+# Always encrypt session results at rest. When set to true, scan / dns /
+# whois / full refuse to run unless RECON_PASSWORD is set, ensuring
+# plaintext never lands on the USB drive. The scheduler also honors
+# RECON_PASSWORD on its own (it does not read this flag), so background
+# fires inherit the same protection automatically.
+# encrypt_results = true

@@ -10,6 +10,7 @@ from a portable Python build without any pip installs.
 """
 import argparse
 import ipaddress
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -18,6 +19,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from lib import (
+    crypto,
     dashboard,
     differ,
     dns_tools,
@@ -155,6 +157,27 @@ def _print_banner():
     sys.stdout.flush()
 
 
+def _resolve_save_password(args):
+    """Decide whether sessions saved by this command should be encrypted.
+
+    Returns the password string (enabling auto-encrypt on save), or
+    ``None`` for plaintext output. Reads two signals:
+
+    * ``RECON_PASSWORD`` environment variable — the actual key
+      material; presence alone enables auto-encrypt for any save.
+    * ``encrypt_results = true`` in ``recon.toml`` — an enforcement
+      aid; when set, a missing ``RECON_PASSWORD`` raises so the
+      toolkit refuses to silently leave plaintext on disk.
+    """
+    pw = os.environ.get("RECON_PASSWORD")
+    enforce = bool(getattr(args, "encrypt_results", False))
+    if enforce and not pw:
+        raise ValueError(
+            "encrypt_results is enabled in recon.toml but RECON_PASSWORD is not set"
+        )
+    return pw or None
+
+
 def _resolve_wordlist(arg):
     if not arg:
         return None
@@ -164,7 +187,7 @@ def _resolve_wordlist(arg):
     return wl if wl.is_file() else None
 
 
-def _scan_one(target, args):
+def _scan_one(target, args, encrypt_password=None):
     session = report.new_session(target, "scan")
     if not args.no_nmap and nmap_runner.is_available():
         log.info("Nmap (%s) -> %s", args.profile, target)
@@ -179,17 +202,24 @@ def _scan_one(target, args):
             log.warning("Nmap not found, using Python TCP connect scanner")
         log.info("python-portscan -> %s", target)
         session["port_scan"] = port_scan.scan(target, ports=args.ports or "1-1024")
-    report.save_session(session)
-    log.info("Saved %s", session["_path"])
+    report.save_session(session, encrypt_password=encrypt_password)
+    saved = session["_path"] + crypto.EXTENSION if encrypt_password else session["_path"]
+    log.info("Saved %s", saved)
     return session
 
 
 def cmd_scan(args):
     targets = expand_targets(args.target, args.targets_file)
-    log.info("Scanning %d target(s)", len(targets))
+    try:
+        encrypt_password = _resolve_save_password(args)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+    log.info("Scanning %d target(s)%s", len(targets),
+             " (auto-encrypt)" if encrypt_password else "")
     any_error = False
     for target in targets:
-        session = _scan_one(target, args)
+        session = _scan_one(target, args, encrypt_password=encrypt_password)
         if _has_error(session):
             any_error = True
     return 2 if any_error else 0
@@ -197,6 +227,11 @@ def cmd_scan(args):
 
 def cmd_dns(args):
     targets = expand_targets(args.target, args.targets_file)
+    try:
+        encrypt_password = _resolve_save_password(args)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
     any_error = False
     for target in targets:
         session = report.new_session(target, "dns")
@@ -212,8 +247,9 @@ def cmd_dns(args):
         elif args.wordlist:
             log.warning("Wordlist not found: %s", args.wordlist)
 
-        report.save_session(session)
-        log.info("Saved %s", session["_path"])
+        report.save_session(session, encrypt_password=encrypt_password)
+        saved = session["_path"] + crypto.EXTENSION if encrypt_password else session["_path"]
+        log.info("Saved %s", saved)
         if _has_error(session):
             any_error = True
     return 2 if any_error else 0
@@ -221,19 +257,25 @@ def cmd_dns(args):
 
 def cmd_whois(args):
     targets = expand_targets(args.target, args.targets_file)
+    try:
+        encrypt_password = _resolve_save_password(args)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
     any_error = False
     for target in targets:
         session = report.new_session(target, "whois")
         log.info("WHOIS lookup for %s", target)
         session["whois"] = whois_tool.lookup(target)
-        report.save_session(session)
-        log.info("Saved %s", session["_path"])
+        report.save_session(session, encrypt_password=encrypt_password)
+        saved = session["_path"] + crypto.EXTENSION if encrypt_password else session["_path"]
+        log.info("Saved %s", saved)
         if _has_error(session):
             any_error = True
     return 2 if any_error else 0
 
 
-def _run_full_one(target, args):
+def _run_full_one(target, args, encrypt_password=None):
     session = report.new_session(target, "full")
     wl_path = _resolve_wordlist(args.wordlist)
     # Pre-compute the wildcard answer set once - otherwise parallel workers
@@ -297,17 +339,24 @@ def _run_full_one(target, args):
         log.info("[4/4] Python TCP connect scan")
         session["port_scan"] = port_scan.scan(target, ports="1-1024")
 
-    report.save_session(session)
-    log.info("Saved %s", session["_path"])
+    report.save_session(session, encrypt_password=encrypt_password)
+    saved = session["_path"] + crypto.EXTENSION if encrypt_password else session["_path"]
+    log.info("Saved %s", saved)
     return session
 
 
 def cmd_full(args):
     targets = expand_targets(args.target, args.targets_file)
-    log.info("Running full recon on %d target(s)", len(targets))
+    try:
+        encrypt_password = _resolve_save_password(args)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+    log.info("Running full recon on %d target(s)%s", len(targets),
+             " (auto-encrypt)" if encrypt_password else "")
     any_error = False
     for target in targets:
-        session = _run_full_one(target, args)
+        session = _run_full_one(target, args, encrypt_password=encrypt_password)
         if _has_error(session):
             any_error = True
     return 2 if any_error else 0
@@ -394,6 +443,351 @@ def cmd_purge(args):
     log.info("Purged %d session(s)", count)
     for sid in ids:
         log.info("  %s", sid)
+    return 0
+
+
+def _read_password(args, *, confirm, attr="password_file", env_var="RECON_PASSWORD",
+                   prompt="Password: "):
+    """Resolve a password from a file, an env var, or an interactive prompt.
+
+    ``attr`` is the args attribute holding an optional file path,
+    ``env_var`` is the environment variable to consult next, and
+    ``prompt`` is the label shown to the interactive user. ``confirm``
+    re-prompts so a typo when encrypting cannot leave a file the user
+    can never decrypt.
+    """
+    import getpass
+    import os as _os
+
+    pf = getattr(args, attr, None)
+    if pf:
+        try:
+            data = Path(pf).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"Could not read password file {pf}: {exc}")
+        # Allow a trailing newline from `echo "pw" > file` without
+        # silently swallowing intentional whitespace inside the password.
+        if data.endswith("\r\n"):
+            data = data[:-2]
+        elif data.endswith("\n") or data.endswith("\r"):
+            data = data[:-1]
+        if not data:
+            raise ValueError(f"Password file {pf} is empty")
+        return data
+
+    if env_var:
+        env = _os.environ.get(env_var)
+        if env:
+            return env
+
+    if not sys.stdin.isatty():
+        raise ValueError(
+            "No password supplied. Use --password-file, "
+            f"{env_var or 'an env var'}, or run interactively."
+        )
+    pw = getpass.getpass(prompt)
+    if not pw:
+        raise ValueError("Password must not be empty")
+    if confirm:
+        again = getpass.getpass("Confirm:  ")
+        if again != pw:
+            raise ValueError("Passwords did not match")
+    return pw
+
+
+def _resolve_session_paths(token):
+    """Map a CLI token to one or more files on disk.
+
+    Accepts: an existing file path, a session id (resolved relative to
+    ``results/`` and including sibling artifacts like ``*.nmap.xml``),
+    or an existing session id with ``.enc`` already appended.
+    """
+    p = Path(token)
+    if p.is_file():
+        return [p]
+
+    candidates = []
+    sid = token
+    if sid.endswith(".json") or sid.endswith(".json.enc"):
+        sid = sid.rsplit(".json", 1)[0]
+    base = report.RESULTS / sid
+    if base.with_suffix(".json").is_file():
+        candidates.append(base.with_suffix(".json"))
+    # Sibling artifacts (e.g. nmap XML); skip the .json we already added.
+    for sibling in report.RESULTS.glob(f"{sid}.*"):
+        if sibling.is_file() and sibling not in candidates and sibling.suffix != ".enc":
+            candidates.append(sibling)
+    # Already-encrypted siblings, when the user asked us to decrypt.
+    for sibling in report.RESULTS.glob(f"{sid}*.enc"):
+        if sibling.is_file() and sibling not in candidates:
+            candidates.append(sibling)
+    return candidates
+
+
+def _collect_bulk_session_ids(args, want_encrypted):
+    """Return the list of session ids selected by --all / --older-than-days.
+
+    ``want_encrypted=True`` means decrypt mode: filter to entries whose
+    ``encrypted`` flag is set. ``False`` means encrypt mode: pick the
+    plaintext entries. The caller still expands each id to concrete
+    paths via :func:`_resolve_session_paths`.
+    """
+    import time as _time
+
+    sessions = report.list_sessions()
+    cutoff = None
+    if getattr(args, "older_than_days", None) is not None:
+        days = int(args.older_than_days)
+        if days < 0:
+            raise ValueError("--older-than-days must be non-negative")
+        cutoff = int(_time.time()) - days * 86400
+    selected = []
+    for entry in sessions:
+        if cutoff is not None and entry.get("created_epoch", 0) >= cutoff:
+            continue
+        if bool(entry.get("encrypted")) != bool(want_encrypted):
+            continue
+        sid = entry.get("id")
+        if sid:
+            selected.append(sid)
+    return selected
+
+
+def cmd_encrypt(args):
+    try:
+        password = _read_password(args, confirm=True)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+
+    bulk = bool(args.all) or args.older_than_days is not None
+    if bulk and args.targets:
+        log.error("--all / --older-than-days cannot be combined with explicit targets")
+        return 2
+    if not bulk and not args.targets:
+        log.error("encrypt: specify a target id, --all, or --older-than-days N")
+        return 2
+
+    if bulk:
+        try:
+            ids = _collect_bulk_session_ids(args, want_encrypted=False)
+        except ValueError as exc:
+            log.error("%s", exc)
+            return 2
+        if not ids:
+            log.warning("No plaintext sessions matched the selection")
+            return 0
+        token_iter = ids
+    else:
+        token_iter = args.targets
+
+    targets = []
+    for token in token_iter:
+        resolved = _resolve_session_paths(token)
+        if not resolved:
+            log.error("No file or session matched: %s", token)
+            return 2
+        targets.extend(resolved)
+
+    out_dir = Path(args.output_dir) if args.output_dir else None
+    encrypted = 0
+    for src in targets:
+        if crypto.is_encrypted(src):
+            log.warning("Skipping already-encrypted file: %s", src)
+            continue
+        if out_dir:
+            dst = out_dir / (src.name + crypto.EXTENSION)
+        else:
+            dst = src.with_name(src.name + crypto.EXTENSION)
+        try:
+            crypto.encrypt_file(src, dst, password)
+        except (OSError, ValueError) as exc:
+            log.error("Encrypt failed for %s: %s", src, exc)
+            return 2
+        log.info("Encrypted %s -> %s", src, dst)
+        encrypted += 1
+        if not args.keep:
+            try:
+                src.unlink()
+                log.debug("Removed plaintext %s", src)
+            except OSError as exc:
+                log.warning("Could not remove plaintext %s: %s", src, exc)
+
+    if not encrypted:
+        log.warning("Nothing to encrypt")
+        return 2
+    log.info("Encrypted %d file(s)", encrypted)
+    return 0
+
+
+def cmd_decrypt(args):
+    try:
+        password = _read_password(args, confirm=False)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+
+    bulk = bool(args.all) or args.older_than_days is not None
+    if bulk and args.targets:
+        log.error("--all / --older-than-days cannot be combined with explicit targets")
+        return 2
+    if not bulk and not args.targets:
+        log.error("decrypt: specify a target id, --all, or --older-than-days N")
+        return 2
+
+    if bulk:
+        try:
+            ids = _collect_bulk_session_ids(args, want_encrypted=True)
+        except ValueError as exc:
+            log.error("%s", exc)
+            return 2
+        if not ids:
+            log.warning("No encrypted sessions matched the selection")
+            return 0
+        token_iter = ids
+    else:
+        token_iter = args.targets
+
+    targets = []
+    for token in token_iter:
+        resolved = _resolve_session_paths(token)
+        if not resolved:
+            log.error("No file or session matched: %s", token)
+            return 2
+        # If the user pointed at a session id, only operate on the encrypted
+        # members - we don't want to "decrypt" a plaintext sibling and
+        # silently overwrite it.
+        targets.extend([p for p in resolved if crypto.is_encrypted(p)] or resolved)
+
+    out_dir = Path(args.output_dir) if args.output_dir else None
+    decrypted = 0
+    for src in targets:
+        if not crypto.is_encrypted(src):
+            log.warning("Skipping non-encrypted file: %s", src)
+            continue
+        if out_dir:
+            name = src.name[:-len(crypto.EXTENSION)] if src.name.endswith(crypto.EXTENSION) else src.name
+            dst = out_dir / name
+        elif src.name.endswith(crypto.EXTENSION):
+            dst = src.with_name(src.name[:-len(crypto.EXTENSION)])
+        else:
+            dst = src.with_name(src.name + ".dec")
+        try:
+            crypto.decrypt_file(src, dst, password)
+        except crypto.InvalidCiphertext as exc:
+            log.error("Decrypt failed for %s: %s", src, exc)
+            return 2
+        except (OSError, ValueError) as exc:
+            log.error("Decrypt failed for %s: %s", src, exc)
+            return 2
+        log.info("Decrypted %s -> %s", src, dst)
+        decrypted += 1
+        if not args.keep:
+            try:
+                src.unlink()
+                log.debug("Removed ciphertext %s", src)
+            except OSError as exc:
+                log.warning("Could not remove ciphertext %s: %s", src, exc)
+
+    if not decrypted:
+        log.warning("Nothing to decrypt")
+        return 2
+    log.info("Decrypted %d file(s)", decrypted)
+    return 0
+
+
+def cmd_rekey(args):
+    """Re-encrypt files with a new password without writing plaintext to disk."""
+    try:
+        old_password = _read_password(
+            args, confirm=False,
+            attr="old_password_file", env_var="RECON_OLD_PASSWORD",
+            prompt="Old password: ",
+        )
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+    try:
+        new_password = _read_password(
+            args, confirm=True,
+            attr="new_password_file", env_var="RECON_NEW_PASSWORD",
+            prompt="New password: ",
+        )
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+    if old_password == new_password:
+        log.error("Old and new passwords are identical")
+        return 2
+
+    bulk = bool(args.all) or args.older_than_days is not None
+    if bulk and args.targets:
+        log.error("--all / --older-than-days cannot be combined with explicit targets")
+        return 2
+    if not bulk and not args.targets:
+        log.error("rekey: specify a target id, --all, or --older-than-days N")
+        return 2
+
+    if bulk:
+        try:
+            ids = _collect_bulk_session_ids(args, want_encrypted=True)
+        except ValueError as exc:
+            log.error("%s", exc)
+            return 2
+        if not ids:
+            log.warning("No encrypted sessions matched the selection")
+            return 0
+        token_iter = ids
+    else:
+        token_iter = args.targets
+
+    targets = []
+    for token in token_iter:
+        resolved = _resolve_session_paths(token)
+        if not resolved:
+            log.error("No file or session matched: %s", token)
+            return 2
+        targets.extend([p for p in resolved if crypto.is_encrypted(p)])
+
+    if not targets:
+        log.warning("Nothing to rekey")
+        return 2
+
+    rekeyed = 0
+    for src in targets:
+        try:
+            blob = src.read_bytes()
+            plaintext = crypto.decrypt(blob, old_password)
+            new_blob = crypto.encrypt(plaintext, new_password)
+        except crypto.InvalidCiphertext as exc:
+            log.error("Rekey failed for %s: %s", src, exc)
+            return 2
+        except OSError as exc:
+            log.error("Rekey failed for %s: %s", src, exc)
+            return 2
+        # Atomic replace via a sibling .part file. We only flip the
+        # bytes once verification of the old password has succeeded,
+        # so a wrong old password leaves the source untouched.
+        tmp = src.with_name(src.name + ".part")
+        try:
+            tmp.write_bytes(new_blob)
+            os.replace(tmp, src)
+        except OSError as exc:
+            log.error("Rekey failed for %s: %s", src, exc)
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            return 2
+        finally:
+            # Best-effort scrub of plaintext bytes in our locals.
+            del plaintext
+            del new_blob
+        log.info("Rekeyed %s", src)
+        rekeyed += 1
+
+    log.info("Rekeyed %d file(s)", rekeyed)
     return 0
 
 
@@ -529,8 +923,9 @@ def cmd_list(args):
         return 0
     log.info("%d session(s):", len(sessions))
     for s in sessions:
+        marker = "[enc]" if s.get("encrypted") else "     "
         sys.stdout.write(
-            f"  {s.get('created', '-'):<18} {s.get('scan_type', '-'):<8} {s.get('target', '-')}\n"
+            f"  {s.get('created', '-'):<18} {marker} {s.get('scan_type', '-'):<8} {s.get('target', '-')}\n"
         )
     sys.stdout.flush()
     return 0
@@ -660,6 +1055,58 @@ def build_parser():
     p.add_argument("--dry-run", action="store_true",
                    help="Show which sessions would be deleted without removing them")
     p.set_defaults(func=cmd_purge)
+
+    p = sub.add_parser(
+        "encrypt",
+        help="Encrypt session files (or arbitrary files) at rest with a password",
+    )
+    p.add_argument("targets", nargs="*",
+                   help="Session ids or paths to encrypt (sibling artifacts included)")
+    p.add_argument("--all", action="store_true",
+                   help="Encrypt every plaintext session under results/")
+    p.add_argument("--older-than-days", dest="older_than_days", type=int,
+                   help="Only encrypt plaintext sessions older than this many days")
+    p.add_argument("--password-file", dest="password_file",
+                   help="Read the password from this file instead of prompting")
+    p.add_argument("--output-dir", "-o",
+                   help="Write encrypted files to this directory (default: alongside source)")
+    p.add_argument("--keep", action="store_true",
+                   help="Keep the original plaintext file (default: remove on success)")
+    p.set_defaults(func=cmd_encrypt)
+
+    p = sub.add_parser(
+        "decrypt",
+        help="Decrypt files produced by `recon encrypt`",
+    )
+    p.add_argument("targets", nargs="*",
+                   help="Session ids or .enc paths to decrypt")
+    p.add_argument("--all", action="store_true",
+                   help="Decrypt every encrypted session under results/")
+    p.add_argument("--older-than-days", dest="older_than_days", type=int,
+                   help="Only decrypt encrypted sessions older than this many days")
+    p.add_argument("--password-file", dest="password_file",
+                   help="Read the password from this file instead of prompting")
+    p.add_argument("--output-dir", "-o",
+                   help="Write decrypted files to this directory (default: alongside source)")
+    p.add_argument("--keep", action="store_true",
+                   help="Keep the encrypted file (default: remove on success)")
+    p.set_defaults(func=cmd_decrypt)
+
+    p = sub.add_parser(
+        "rekey",
+        help="Re-encrypt sessions with a new password (plaintext never touches disk)",
+    )
+    p.add_argument("targets", nargs="*",
+                   help="Session ids or .enc paths to rekey")
+    p.add_argument("--all", action="store_true",
+                   help="Rekey every encrypted session under results/")
+    p.add_argument("--older-than-days", dest="older_than_days", type=int,
+                   help="Only rekey encrypted sessions older than this many days")
+    p.add_argument("--old-password-file", dest="old_password_file",
+                   help="Read the OLD password from this file instead of prompting")
+    p.add_argument("--new-password-file", dest="new_password_file",
+                   help="Read the NEW password from this file instead of prompting")
+    p.set_defaults(func=cmd_rekey)
 
     return parser
 

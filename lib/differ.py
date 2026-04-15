@@ -14,15 +14,8 @@ from . import report
 
 
 def _load(session_id_or_path):
-    path = Path(session_id_or_path)
-    if not path.exists():
-        candidate = report.RESULTS / f"{session_id_or_path}.json"
-        if candidate.exists():
-            path = candidate
-        else:
-            raise FileNotFoundError(f"no such session: {session_id_or_path}")
-    with open(path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+    """Load a session by id or path, decrypting transparently if needed."""
+    return report.load_session(session_id_or_path)
 
 
 def _open_ports(session):
