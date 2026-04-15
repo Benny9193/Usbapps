@@ -1,0 +1,21 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local virtualenv / editor cruft
+.venv/
+venv/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Scan output (keep the directory via .gitkeep)
+results/*.json
+
+# Portable binaries are user-supplied; do not commit them
+bin/nmap
+bin/nmap.exe
+bin/nmap/
+bin/python/

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recon Toolkit - Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>
+      <span class="logo">&gt;_</span>
+      Portable Recon Dashboard
+    </h1>
+    <div class="actions">
+      <input id="filter" type="search" placeholder="Filter sessions..." autocomplete="off">
+      <button id="refresh" title="Reload sessions">&#x21bb; Refresh</button>
+      <span id="status">Loading...</span>
+    </div>
+  </header>
+
+  <main>
+    <aside id="sidebar">
+      <h2>Sessions</h2>
+      <ul id="sessionList"></ul>
+      <div id="hint">
+        <p>No data yet?</p>
+        <p>Run a scan from the command line:</p>
+        <pre>python recon.py full example.com</pre>
+        <pre>python recon.py dns example.com</pre>
+        <pre>python recon.py scan 10.0.0.1</pre>
+      </div>
+    </aside>
+
+    <section id="view">
+      <div id="empty" class="empty">
+        <div class="empty-logo">&gt;_</div>
+        <p>Select a session from the sidebar to view results.</p>
+      </div>
+
+      <div id="content" hidden>
+        <div id="header-card" class="card header-card"></div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="summary">Summary</button>
+          <button class="tab" data-tab="nmap">Nmap</button>
+          <button class="tab" data-tab="ports">Ports</button>
+          <button class="tab" data-tab="dns">DNS</button>
+          <button class="tab" data-tab="subs">Subdomains</button>
+          <button class="tab" data-tab="whois">WHOIS</button>
+          <button class="tab" data-tab="raw">Raw JSON</button>
+        </div>
+        <div id="panels"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Portable Recon Toolkit - USB Edition</span>
+    <span class="muted">No external services - all data stored locally in <code>results/</code></span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
