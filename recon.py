@@ -19,7 +19,9 @@ sys.path.insert(0, str(ROOT))
 
 from lib import (
     dashboard,
+    differ,
     dns_tools,
+    exporters,
     logutil,
     nmap_runner,
     port_scan,
@@ -277,6 +279,90 @@ def cmd_full(args):
     return 2 if any_error else 0
 
 
+def cmd_diff(args):
+    try:
+        result = differ.diff(args.session_a, args.session_b)
+    except FileNotFoundError as exc:
+        log.error("%s", exc)
+        return 2
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+
+    # Persist the diff as a new session-shaped document so the dashboard
+    # surfaces it next to the originals.
+    session = report.new_session(result["target"], "diff")
+    session["diff"] = result
+    report.save_session(session)
+
+    log.info("Diff %s vs %s", result["a"]["id"], result["b"]["id"])
+    log.info(
+        "  ports: +%d -%d (unchanged %d)",
+        len(result["ports"]["added"]),
+        len(result["ports"]["removed"]),
+        result["ports"]["unchanged"],
+    )
+    log.info(
+        "  subdomains: +%d -%d",
+        len(result["subdomains"]["added"]),
+        len(result["subdomains"]["removed"]),
+    )
+    if result.get("dns"):
+        log.info("  DNS changed: %s", ", ".join(result["dns"].keys()))
+    log.info("Saved %s", session["_path"])
+    return 0
+
+
+def cmd_export(args):
+    fmt = args.format.lower()
+    if fmt not in exporters.EXPORTERS:
+        log.error("Unknown format: %s (choose from %s)", fmt, ", ".join(exporters.EXPORTERS))
+        return 2
+    try:
+        content = exporters.EXPORTERS[fmt](args.session)
+    except FileNotFoundError as exc:
+        log.error("%s", exc)
+        return 2
+    if args.output:
+        Path(args.output).write_text(content, encoding="utf-8")
+        log.info("Wrote %s", args.output)
+    else:
+        sys.stdout.write(content)
+        if not content.endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+    return 0
+
+
+def cmd_delete(args):
+    removed_total = 0
+    for sid in args.session_ids:
+        removed = report.delete_session(sid)
+        if not removed:
+            log.warning("No session matched: %s", sid)
+        else:
+            removed_total += len(removed)
+            for p in removed:
+                log.info("Removed %s", p)
+    return 0 if removed_total else 2
+
+
+def cmd_purge(args):
+    import time as _time
+    cutoff = int(_time.time()) - int(args.older_than_days) * 86400
+    if args.dry_run:
+        victims = [s for s in report.list_sessions() if s.get("created_epoch", 0) < cutoff]
+        log.info("Would delete %d session(s)", len(victims))
+        for v in victims:
+            log.info("  %s (%s)", v["id"], v["created"])
+        return 0
+    count, ids = report.purge(cutoff)
+    log.info("Purged %d session(s)", count)
+    for sid in ids:
+        log.info("  %s", sid)
+    return 0
+
+
 def cmd_dashboard(args):
     dashboard.serve(host=args.host, port=args.port, open_browser=not args.no_browser)
     return 0
@@ -352,6 +438,29 @@ def build_parser():
 
     p = sub.add_parser("list", help="List previous scan sessions")
     p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("diff", help="Compare two sessions for the same target")
+    p.add_argument("session_a", help="Earlier session id or path")
+    p.add_argument("session_b", help="Later session id or path")
+    p.set_defaults(func=cmd_diff)
+
+    p = sub.add_parser("export", help="Render a session to Markdown / HTML / CSV")
+    p.add_argument("session", help="Session id or path")
+    p.add_argument("--format", "-f", default="md", choices=["md", "html", "csv"],
+                   help="Output format (default: md)")
+    p.add_argument("--output", "-o", help="Write to this file instead of stdout")
+    p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("delete", help="Delete one or more sessions")
+    p.add_argument("session_ids", nargs="+")
+    p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser("purge", help="Delete sessions older than N days")
+    p.add_argument("--older-than-days", type=int, required=True,
+                   help="Delete sessions whose created_epoch is older than this many days")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Show which sessions would be deleted without removing them")
+    p.set_defaults(func=cmd_purge)
 
     return parser
 
