@@ -3,6 +3,8 @@ import ipaddress
 import re
 import socket
 
+from . import netproxy
+
 IANA_WHOIS = "whois.iana.org"
 ARIN_WHOIS = "whois.arin.net"
 
@@ -37,9 +39,11 @@ def _is_ip(target):
 
 
 def _query(server, target, timeout=5):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    # Route through an HTTP CONNECT proxy if one is configured; otherwise
+    # this is a plain socket.create_connection.
+    s = netproxy.connect(server, 43, timeout=timeout)
+    try:
         s.settimeout(timeout)
-        s.connect((server, 43))
         s.sendall((target + "\r\n").encode("utf-8"))
         chunks = []
         while True:
@@ -51,6 +55,11 @@ def _query(server, target, timeout=5):
                 break
             chunks.append(data)
         return b"".join(chunks).decode("utf-8", "replace")
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
 
 
 def lookup(target):

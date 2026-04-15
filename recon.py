@@ -35,6 +35,39 @@ log = logutil.get()
 # Hard ceiling so a stray /8 never accidentally melts the machine.
 MAX_EXPANDED_TARGETS = 1024
 
+CONFIG_PATH = ROOT / "config" / "recon.toml"
+
+
+def _load_config():
+    """Load optional config/recon.toml. Returns a flat dict or {}.
+
+    Missing file -> empty dict (no warning). Python <3.11 without tomllib ->
+    single warning and empty dict. Malformed TOML -> warning and empty dict.
+    """
+    if not CONFIG_PATH.is_file():
+        return {}
+    try:
+        import tomllib  # type: ignore
+    except ModuleNotFoundError:
+        log.warning("tomllib unavailable (<3.11); %s ignored", CONFIG_PATH)
+        return {}
+    try:
+        with open(CONFIG_PATH, "rb") as fh:
+            raw = tomllib.load(fh)
+    except Exception as exc:
+        log.warning("Could not parse %s: %s", CONFIG_PATH, exc)
+        return {}
+    # Flatten [section] tables into a single dict. argparse dests are flat
+    # and we don't want to enforce section-per-subcommand mapping.
+    flat = {}
+    for section, values in raw.items():
+        if isinstance(values, dict):
+            for k, v in values.items():
+                flat.setdefault(k, v)
+        else:
+            flat.setdefault(section, values)
+    return flat
+
 
 def _expand_cidr(token):
     """Expand a single token into a list of host strings.
@@ -476,6 +509,11 @@ def build_parser():
 
 def main():
     parser = build_parser()
+    defaults = _load_config()
+    if defaults:
+        # set_defaults silently overrides anything whose argparse dest matches.
+        # Explicit CLI flags still take precedence because they're parsed after.
+        parser.set_defaults(**defaults)
     args = parser.parse_args()
     logutil.setup(verbosity=args.verbose, quiet=args.quiet, log_file=args.log_file)
     if not args.quiet:
