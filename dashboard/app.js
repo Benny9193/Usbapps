@@ -9,6 +9,7 @@
     current: null,
     currentData: null,
     filterText: '',
+    schedules: [],
   };
 
   const el = {
@@ -20,6 +21,8 @@
     headerCard: document.getElementById('header-card'),
     status: document.getElementById('status'),
     refresh: document.getElementById('refresh'),
+    schedulesList: document.getElementById('schedulesList'),
+    schedulesHeading: document.getElementById('schedulesHeading'),
   };
 
   // ---------- data ----------
@@ -37,6 +40,66 @@
       state.sessions = [];
       applyFilter();
       el.status.textContent = 'No sessions yet';
+    }
+    // Schedules are optional; a 404 is normal when none are configured.
+    loadSchedules();
+  }
+
+  async function loadSchedules() {
+    try {
+      const res = await fetch('/config/schedules.json?t=' + Date.now());
+      if (!res.ok) {
+        state.schedules = [];
+        renderSchedules();
+        return;
+      }
+      const data = await res.json();
+      state.schedules = Array.isArray(data.schedules) ? data.schedules : [];
+    } catch (e) {
+      state.schedules = [];
+    }
+    renderSchedules();
+  }
+
+  function renderSchedules() {
+    if (!el.schedulesList) return;
+    if (!state.schedules.length) {
+      el.schedulesList.hidden = true;
+      el.schedulesHeading.hidden = true;
+      el.schedulesList.innerHTML = '';
+      return;
+    }
+    el.schedulesList.hidden = false;
+    el.schedulesHeading.hidden = false;
+    el.schedulesList.innerHTML = '';
+    for (const s of state.schedules) {
+      const li = document.createElement('li');
+      li.className = 'schedule';
+      const statusClass = s.enabled === false ? 'off'
+        : (s.last_status === 'changed' ? 'changed'
+          : (s.last_status === 'error' ? 'err'
+            : (s.last_status === 'unchanged' ? 'clean' : 'pending')));
+      const lastRun = s.last_run_epoch
+        ? new Date(s.last_run_epoch * 1000).toLocaleString()
+        : 'never';
+      li.innerHTML =
+        '<div class="s-target">' + escapeHtml(s.target || '?') + '</div>' +
+        '<div class="s-meta">' +
+          '<span class="s-type ' + escapeHtml((s.workflow || 'scan').toLowerCase()) + '">' +
+            escapeHtml((s.workflow || 'scan')) +
+          '</span>' +
+          '<span class="sched-dot ' + statusClass + '" title="' +
+            escapeHtml(s.last_status || 'pending') + '"></span>' +
+          '<span class="sched-every">&#x231B; ' + escapeHtml(s.interval || '') + '</span>' +
+        '</div>' +
+        '<div class="s-meta"><span class="muted">last: ' + escapeHtml(lastRun) + '</span></div>';
+      li.addEventListener('click', () => {
+        if (s.last_session_id) {
+          const match = state.sessions.find(x => x.id === s.last_session_id);
+          if (match) selectSession(match);
+        }
+      });
+      el.schedulesList.appendChild(li);
     }
   }
 
@@ -100,6 +163,7 @@
     renderHeader(data);
     el.panels.innerHTML =
       '<div class="panel active" id="panel-summary">' + renderSummary(data) + '</div>' +
+      '<div class="panel" id="panel-changes">' + renderChanges(data) + '</div>' +
       '<div class="panel" id="panel-nmap">' + renderNmap(data) + '</div>' +
       '<div class="panel" id="panel-ports">' + renderPorts(data) + '</div>' +
       '<div class="panel" id="panel-dns">' + renderDns(data) + '</div>' +
@@ -198,6 +262,166 @@
         bars +
       '</svg>'
     );
+  }
+
+  function renderChanges(data) {
+    // Prefer an auto-diff attached by the scheduler. Fall back to a
+    // `diff` session document (same shape as the `recon diff` CLI writes).
+    let diff = data && data.diff_against_previous;
+    let prior = null;
+    let source = 'auto';
+    if (!diff && data && data.diff && data.scan_type === 'diff') {
+      diff = data.diff;
+      source = 'diff-session';
+    }
+    if (!diff) {
+      if (data && data.diff_error) {
+        return '<div class="card"><h3>Changes</h3>' +
+          '<p class="muted">Auto-diff failed: ' + escapeHtml(data.diff_error) + '</p></div>';
+      }
+      return '<div class="card"><h3>Changes</h3>' +
+        '<p class="muted">No delta recorded for this session.</p>' +
+        '<p class="muted">Tip: schedule a recurring scan with ' +
+        '<code>recon schedule add TARGET full --every 1h</code> and the toolkit ' +
+        'will auto-diff each run against the previous one.</p></div>';
+    }
+
+    const pAdded = diff.ports && diff.ports.added || [];
+    const pRemoved = diff.ports && diff.ports.removed || [];
+    const sAdded = diff.subdomains && diff.subdomains.added || [];
+    const sRemoved = diff.subdomains && diff.subdomains.removed || [];
+    const dnsDelta = diff.dns || {};
+    const unchanged = (diff.ports && diff.ports.unchanged) || 0;
+    const empty = !pAdded.length && !pRemoved.length
+      && !sAdded.length && !sRemoved.length
+      && !Object.keys(dnsDelta).length;
+
+    const baseLabel = (diff.a && (diff.a.id || diff.a.created)) || '-';
+    const newLabel = (diff.b && (diff.b.id || diff.b.created)) || '-';
+
+    let html =
+      '<div class="card"><h3>Auto-Diff</h3>' +
+        '<dl class="kv">' +
+          kv('Target', diff.target || data.target) +
+          kv('Baseline', baseLabel) +
+          kv('This Scan', newLabel) +
+          kv('Source', source === 'auto'
+            ? 'auto (scheduled recurring scan)' : 'recon diff session') +
+        '</dl>' +
+      '</div>';
+
+    const stats = [
+      { label: 'Ports Added', num: pAdded.length, cls: pAdded.length ? '' : 'info' },
+      { label: 'Ports Removed', num: pRemoved.length, cls: pRemoved.length ? 'crit' : 'info' },
+      { label: 'Ports Unchanged', num: unchanged, cls: 'info' },
+      { label: 'Subs Added', num: sAdded.length, cls: sAdded.length ? 'purple' : 'info' },
+      { label: 'Subs Removed', num: sRemoved.length, cls: sRemoved.length ? 'crit' : 'info' },
+      { label: 'DNS Types Changed', num: Object.keys(dnsDelta).length, cls: 'warn' },
+    ];
+    html += '<div class="card"><h3>Delta Summary</h3><div class="stat-grid">' +
+      stats.map(s => (
+        '<div class="stat ' + s.cls + '">' +
+          '<div class="num">' + s.num + '</div>' +
+          '<div class="label">' + s.label + '</div>' +
+        '</div>'
+      )).join('') +
+      '</div></div>';
+
+    if (empty) {
+      html += '<div class="card"><h3>No Changes</h3>' +
+        '<p class="muted">The target\'s posture is identical to the previous scan.</p></div>';
+      return html;
+    }
+
+    if (pAdded.length || pRemoved.length) {
+      let rows = '';
+      for (const p of pAdded) {
+        rows +=
+          '<tr>' +
+            '<td><span class="pill open">added</span></td>' +
+            '<td><code>' + escapeHtml(p[0] || '') + '</code></td>' +
+            '<td><code>' + escapeHtml(String(p[1] || '')) + '</code></td>' +
+            '<td>' + escapeHtml(p[2] || 'tcp') + '</td>' +
+          '</tr>';
+      }
+      for (const p of pRemoved) {
+        rows +=
+          '<tr>' +
+            '<td><span class="pill closed">removed</span></td>' +
+            '<td><code>' + escapeHtml(p[0] || '') + '</code></td>' +
+            '<td><code>' + escapeHtml(String(p[1] || '')) + '</code></td>' +
+            '<td>' + escapeHtml(p[2] || 'tcp') + '</td>' +
+          '</tr>';
+      }
+      html +=
+        '<div class="card"><h3>Port Changes <span class="count">' +
+          (pAdded.length + pRemoved.length) + '</span></h3>' +
+        '<table><thead><tr>' +
+          '<th>Change</th><th>Host</th><th>Port</th><th>Proto</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+
+    if (sAdded.length || sRemoved.length) {
+      let rows = '';
+      for (const s of sAdded) {
+        rows += '<tr><td><span class="pill open">added</span></td>' +
+                '<td><code>' + escapeHtml(s) + '</code></td></tr>';
+      }
+      for (const s of sRemoved) {
+        rows += '<tr><td><span class="pill closed">removed</span></td>' +
+                '<td><code>' + escapeHtml(s) + '</code></td></tr>';
+      }
+      html +=
+        '<div class="card"><h3>Subdomain Changes <span class="count">' +
+          (sAdded.length + sRemoved.length) + '</span></h3>' +
+        '<table><thead><tr><th>Change</th><th>Subdomain</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table></div>';
+    }
+
+    const dnsTypes = Object.keys(dnsDelta);
+    if (dnsTypes.length) {
+      let rows = '';
+      for (const t of dnsTypes) {
+        const added = (dnsDelta[t] && dnsDelta[t].added) || [];
+        const removed = (dnsDelta[t] && dnsDelta[t].removed) || [];
+        for (const v of added) {
+          rows +=
+            '<tr>' +
+              '<td><span class="pill open">added</span></td>' +
+              '<td>' + escapeHtml(t) + '</td>' +
+              '<td><code>' + escapeHtml(formatVal(safeParse(v))) + '</code></td>' +
+            '</tr>';
+        }
+        for (const v of removed) {
+          rows +=
+            '<tr>' +
+              '<td><span class="pill closed">removed</span></td>' +
+              '<td>' + escapeHtml(t) + '</td>' +
+              '<td><code>' + escapeHtml(formatVal(safeParse(v))) + '</code></td>' +
+            '</tr>';
+        }
+      }
+      html +=
+        '<div class="card"><h3>DNS Changes</h3>' +
+        '<table><thead><tr><th>Change</th><th>Type</th><th>Value</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table></div>';
+    }
+
+    const expiry = diff.whois_expiry;
+    if (expiry && (expiry.before || expiry.after) && expiry.before !== expiry.after) {
+      html +=
+        '<div class="card"><h3>WHOIS Expiry Shift</h3><dl class="kv">' +
+          kv('Before', expiry.before || '-') +
+          kv('After', expiry.after || '-') +
+        '</dl></div>';
+    }
+
+    return html;
+  }
+
+  function safeParse(v) {
+    if (typeof v !== 'string') return v;
+    try { return JSON.parse(v); } catch (e) { return v; }
   }
 
   function renderNmap(data) {

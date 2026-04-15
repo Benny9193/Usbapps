@@ -36,12 +36,15 @@ class NormalizeTests(unittest.TestCase):
 class IsAllowedTests(unittest.TestCase):
     def test_allowed(self):
         for p in ("/", "/dashboard/", "/dashboard/app.js",
-                  "/results/", "/results/index.json"):
+                  "/results/", "/results/index.json",
+                  "/config/schedules.json"):
             self.assertTrue(dashboard._is_allowed(p), p)
 
     def test_blocked(self):
         for p in ("/lib/dns_tools.py", "/recon.py", "/.gitignore",
-                  "/config/recon.toml", "/bin/nmap", "/.git/HEAD"):
+                  "/config/recon.toml", "/config/", "/config",
+                  "/config/wordlists/subdomains.txt",
+                  "/bin/nmap", "/.git/HEAD"):
             self.assertFalse(dashboard._is_allowed(p), p)
 
 

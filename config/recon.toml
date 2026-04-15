@@ -26,6 +26,10 @@
 # port = 8787
 # token = ""                         # set to enforce bearer-token auth
 # auth = false                       # true => generate a random token
+# scheduler = false                  # start the recurring-scan scheduler too
+
+# Recurring scans are managed via `recon schedule ...` and persisted to
+# config/schedules.json - there is no [schedule] section in this file.
 
 [logging]
 # log_file = "results/recon.log"

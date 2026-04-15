@@ -30,6 +30,7 @@ Usbapps/
     dashboard.py      Threaded local HTTP server (whitelisted, optional auth)
     logutil.py        Central logger with [+] / [!] / [-] prefixes
     differ.py         Session-to-session diff
+    scheduler.py      Recurring scans + auto-diff (stdlib sched + thread)
     exporters.py      Markdown / HTML / CSV renderers
     netproxy.py       Optional HTTP CONNECT proxy client
   dashboard/
@@ -39,6 +40,7 @@ Usbapps/
   bin/                Drop portable Nmap / Python binaries here
   config/
     recon.toml        Optional defaults (TOML, Python 3.11+)
+    schedules.json    Recurring scan definitions (managed by `recon schedule`)
     wordlists/
       subdomains.txt  Built-in subdomain wordlist (~200 entries)
   results/            Per-scan JSON files + nmap XML + index.json
@@ -104,13 +106,23 @@ recon whois TARGET [-iL file]
 recon full TARGET [-iL file] [--profile ...] [--wordlist PATH] [--no-nmap]
 
 recon dashboard [--host 127.0.0.1] [--port 8787] [--no-browser]
-                [--token TOKEN | --auth]
+                [--token TOKEN | --auth] [--scheduler]
 
 recon list
 recon diff   <session-id-a> <session-id-b>
 recon export <session-id> [--format {md,html,csv}] [-o FILE]
 recon delete <session-id> [<session-id> ...]
 recon purge  --older-than-days N [--dry-run]
+
+recon schedule add    TARGET {scan,dns,full} --every 30s|5m|1h|1d
+                      [--profile ...] [--wordlist PATH] [--ports PORTS]
+                      [--server IP] [--no-nmap] [--disabled]
+recon schedule list
+recon schedule remove  <id>
+recon schedule enable  <id>
+recon schedule disable <id>
+recon schedule run    [<id>]            # run now (all, or a specific entry)
+recon schedule daemon                   # foreground scheduler (Ctrl+C to stop)
 ```
 
 `TARGET` may be a hostname, an IPv4/IPv6 address, a CIDR block
@@ -138,6 +150,40 @@ the Python TCP connect scanner. It supports IPv4+IPv6, protocol-aware
 banner grabs (HTTP HEAD, SMTP EHLO, ...), and a UDP probe mode for
 DNS/NTP/SNMP/IKEv1/SSDP via `--protocol udp`.
 
+## Scheduled scans & auto-diff
+
+Turn the toolkit into a low-touch monitoring station by persisting
+recurring jobs to `config/schedules.json`:
+
+```bash
+python3 recon.py schedule add example.com full --every 1h \
+    --wordlist config/wordlists/subdomains.txt
+python3 recon.py schedule list
+python3 recon.py dashboard --scheduler    # starts the daemon alongside the UI
+```
+
+Each fire runs the configured workflow (`scan` / `dns` / `full`) and
+auto-diffs the result against the most recent previous session for the
+same target using `lib/differ.py`. The delta is written back into the
+fresh session under `diff_against_previous`, so the dashboard's
+**Changes** tab surfaces new/removed ports, subdomain churn, DNS record
+deltas, and WHOIS expiry shifts without any extra lookups.
+
+The scheduler is a simple in-process `sched.scheduler` driven by a
+daemon thread - no cron, no systemd, no OS privileges. Missed fires
+(e.g. laptop was asleep) are intentionally not replayed; on startup each
+entry is scheduled relative to `last_run_epoch + interval_seconds`,
+falling forward if that moment is already in the past. Every fire
+re-reads `schedules.json`, so `recon schedule disable ...` takes effect
+without restarting the daemon.
+
+Run the scheduler without the HTTP UI:
+
+```bash
+python3 recon.py schedule daemon          # foreground, Ctrl+C to stop
+python3 recon.py schedule run <id>        # trigger once, now
+```
+
 ## Configuration file
 
 `config/recon.toml` is optional. When present, it is loaded at startup
@@ -153,12 +199,18 @@ stay direct because CONNECT cannot tunnel UDP.
 ## Dashboard
 
 - **Summary** - target, stats, service distribution bar chart
+- **Changes** - auto-diff vs. the previous session for the same target
+  (ports added/removed, subdomain churn, DNS record deltas, WHOIS expiry shift)
 - **Nmap** - per-host ports, services, versions, OS guess, script output
 - **Ports** - aggregated open port table across Nmap and the Python scanner
 - **DNS** - A/AAAA/NS/MX/TXT/CNAME/SOA/CAA + reverse PTR
 - **Subdomains** - wordlist brute-force results
 - **WHOIS** - parsed fields + raw response
 - **Raw JSON** - the full session document for scripting / grepping
+
+The sidebar also surfaces active **Schedules** with a status dot
+(green = unchanged, amber = changed, red = error). Clicking a schedule
+jumps to its most recent session.
 
 The sidebar search filters sessions by target or type. Sessions auto-refresh
 every 10 seconds so live scans populate without manual reloads.

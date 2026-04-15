@@ -16,6 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 # lib/, bin/, .git/, config/, and any stray files at the repo root.
 ALLOWED_PREFIXES = ("/dashboard/", "/results/")
 
+# A narrow allow-list of exact config files the dashboard may read. The
+# schedules file is surfaced here so the UI can render the Schedules panel
+# without needing a full API layer - nothing else under config/ is served.
+ALLOWED_EXACT = ("/config/schedules.json",)
+
 # Headers that make the dashboard safer when accidentally bound to 0.0.0.0
 # on a hostile network: deny embedding, lock down navigation, and pin the
 # asset origin via CSP. Inline styles are disallowed, so edits to the JS/CSS
@@ -59,6 +64,8 @@ def _normalize(path):
 
 def _is_allowed(path):
     if path in ("/", ""):
+        return True
+    if path in ALLOWED_EXACT:
         return True
     return any(path == p.rstrip("/") or path.startswith(p) for p in ALLOWED_PREFIXES)
 
@@ -167,7 +174,8 @@ class _Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
 
-def serve(host="127.0.0.1", port=8787, open_browser=True, token=None, require_auth=False):
+def serve(host="127.0.0.1", port=8787, open_browser=True, token=None,
+          require_auth=False, run_scheduler=False):
     """Serve the dashboard.
 
     token: if given, clients must present this token via either a Bearer
@@ -176,6 +184,9 @@ def serve(host="127.0.0.1", port=8787, open_browser=True, token=None, require_au
            auth so subsequent navigation does not leak the token.
     require_auth: if True and no token is provided, a random one is
            generated and printed once to stdout.
+    run_scheduler: when True, start the in-process recurring-scan
+           scheduler alongside the HTTP server. Missed fires are not
+           replayed; see :mod:`lib.scheduler` for details.
     """
     (ROOT / "results").mkdir(exist_ok=True)
     report.update_index()
@@ -185,6 +196,16 @@ def serve(host="127.0.0.1", port=8787, open_browser=True, token=None, require_au
 
     httpd = _Server((host, port), _Handler)
     httpd.auth_token = token
+
+    sched_instance = None
+    if run_scheduler:
+        # Lazy import so a broken scheduler never prevents the dashboard
+        # from serving static assets.
+        from . import scheduler as _scheduler
+        sched_instance = _scheduler.start_default()
+        active = len(_scheduler.load_schedules())
+        print(f"[+] Scheduler: {active} schedule(s) loaded")
+
     try:
         url = f"http://{host}:{port}/"
         print(f"[+] Dashboard: {url}")
@@ -202,6 +223,9 @@ def serve(host="127.0.0.1", port=8787, open_browser=True, token=None, require_au
         except KeyboardInterrupt:
             print("\n[+] Dashboard stopped")
     finally:
+        if sched_instance is not None:
+            from . import scheduler as _scheduler
+            _scheduler.stop_default(timeout=2.0)
         httpd.server_close()
 
 
