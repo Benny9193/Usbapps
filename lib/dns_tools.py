@@ -1,13 +1,17 @@
 """Pure-Python DNS reconnaissance.
 
 Implements a minimal DNS wire-format resolver so the toolkit works on a USB
-stick without dig/nslookup or external packages like dnspython.
+stick without dig/nslookup or external packages like dnspython. Supports
+EDNS0 for large responses, TCP fallback on truncation, AXFR attempts,
+and DMARC/SPF parsing.
 """
+import ipaddress
 import random
 import socket
 import struct
 
 DEFAULT_SERVERS = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+EDNS_UDP_SIZE = 4096
 
 RR_TYPES = {
     "A": 1,
@@ -19,9 +23,14 @@ RR_TYPES = {
     "TXT": 16,
     "AAAA": 28,
     "SRV": 33,
+    "AXFR": 252,
     "CAA": 257,
 }
 RR_BY_NUM = {v: k for k, v in RR_TYPES.items()}
+
+# DNS header flag masks
+_FLAG_TC = 0x0200
+_FLAG_AD = 0x0020
 
 
 def _encode_name(qname):
@@ -36,12 +45,21 @@ def _encode_name(qname):
     return out + b"\x00"
 
 
-def _build_query(qname, qtype):
+def _encode_opt_rr(udp_size=EDNS_UDP_SIZE):
+    # OPT pseudo-RR per RFC 6891.
+    # name: root (0x00); type: 41 (OPT); class: UDP payload size;
+    # TTL: ext-rcode(0)|version(0)|flags(0); RDLEN: 0
+    return b"\x00" + struct.pack(">HHIH", 41, udp_size, 0, 0)
+
+
+def _build_query(qname, qtype, recursion=True, use_edns=True):
     tid = random.randint(0, 0xFFFF)
-    flags = 0x0100  # standard recursive query
-    header = struct.pack(">HHHHHH", tid, flags, 1, 0, 0, 0)
+    flags = 0x0100 if recursion else 0x0000
+    arcount = 1 if use_edns else 0
+    header = struct.pack(">HHHHHH", tid, flags, 1, 0, 0, arcount)
     question = _encode_name(qname) + struct.pack(">HH", qtype, 1)
-    return tid, header + question
+    additional = _encode_opt_rr() if use_edns else b""
+    return tid, header + question + additional
 
 
 def _read_name(data, offset):
@@ -76,11 +94,8 @@ def _parse_rdata(rtype, data, offset, rdlength):
     end = offset + rdlength
     if rtype == 1:  # A
         return ".".join(str(b) for b in data[offset:offset + 4])
-    if rtype == 28:  # AAAA
-        parts = struct.unpack(">8H", data[offset:offset + 16])
-        # Collapse longest zero run per RFC 5952 (simple version)
-        hexparts = [f"{p:x}" for p in parts]
-        return ":".join(hexparts)
+    if rtype == 28:  # AAAA - delegate RFC 5952 compression to the stdlib
+        return str(ipaddress.IPv6Address(bytes(data[offset:offset + 16])))
     if rtype in (2, 5, 12):  # NS, CNAME, PTR
         name, _ = _read_name(data, offset)
         return name
@@ -118,21 +133,21 @@ def _parse_rdata(rtype, data, offset, rdlength):
     return data[offset:end].hex()
 
 
-def _parse_response(data):
-    if len(data) < 12:
-        return [], 1
-    _tid, flags, qdcount, ancount, _ns, _ar = struct.unpack(">HHHHHH", data[:12])
-    offset = 12
-    for _ in range(qdcount):
-        _, offset = _read_name(data, offset)
-        offset += 4
+def _parse_sections(data, start_offset, count):
     answers = []
-    for _ in range(ancount):
+    offset = start_offset
+    for _ in range(count):
+        if offset >= len(data):
+            break
         name, offset = _read_name(data, offset)
         if offset + 10 > len(data):
             break
         rtype, _rclass, ttl, rdlength = struct.unpack(">HHIH", data[offset:offset + 10])
         offset += 10
+        # Skip OPT pseudo-RRs in additional sections (type 41)
+        if rtype == 41:
+            offset += rdlength
+            continue
         value = _parse_rdata(rtype, data, offset, rdlength)
         answers.append({
             "name": name,
@@ -141,27 +156,86 @@ def _parse_response(data):
             "value": value,
         })
         offset += rdlength
-    rcode = flags & 0x0F
-    return answers, rcode
+    return answers, offset
+
+
+def _parse_response(data):
+    if len(data) < 12:
+        return {"answers": [], "rcode": 1, "tc": False, "ad": False, "flags": 0}
+    _tid, flags, qdcount, ancount, _ns, _ar = struct.unpack(">HHHHHH", data[:12])
+    offset = 12
+    for _ in range(qdcount):
+        if offset >= len(data):
+            break
+        _, offset = _read_name(data, offset)
+        offset += 4
+    answers, _ = _parse_sections(data, offset, ancount)
+    return {
+        "answers": answers,
+        "rcode": flags & 0x0F,
+        "tc": bool(flags & _FLAG_TC),
+        "ad": bool(flags & _FLAG_AD),
+        "flags": flags,
+    }
+
+
+def _recv_exact(sock, count):
+    buf = b""
+    while len(buf) < count:
+        chunk = sock.recv(count - len(buf))
+        if not chunk:
+            raise EOFError("connection closed")
+        buf += chunk
+    return buf
+
+
+def _query_udp(qname, qtype_num, server, timeout):
+    _tid, pkt = _build_query(qname, qtype_num)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(pkt, (server, 53))
+        data, _ = sock.recvfrom(EDNS_UDP_SIZE)
+    finally:
+        sock.close()
+    return _parse_response(data)
+
+
+def _query_tcp(qname, qtype_num, server, timeout):
+    _tid, pkt = _build_query(qname, qtype_num, use_edns=False)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        s.connect((server, 53))
+        s.sendall(struct.pack(">H", len(pkt)) + pkt)
+        header = _recv_exact(s, 2)
+        (rlen,) = struct.unpack(">H", header)
+        data = _recv_exact(s, rlen)
+    return _parse_response(data)
 
 
 def query(qname, qtype="A", server=None, timeout=3):
     if qtype not in RR_TYPES:
         raise ValueError(f"Unsupported DNS type: {qtype}")
+    qtype_num = RR_TYPES[qtype]
     servers = [server] if server else DEFAULT_SERVERS
     last_err = None
     for srv in servers:
         try:
-            _tid, pkt = _build_query(qname, RR_TYPES[qtype])
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(timeout)
-            try:
-                sock.sendto(pkt, (srv, 53))
-                data, _ = sock.recvfrom(4096)
-            finally:
-                sock.close()
-            answers, rcode = _parse_response(data)
-            return {"server": srv, "rcode": rcode, "answers": answers}
+            resp = _query_udp(qname, qtype_num, srv, timeout)
+            if resp["tc"]:
+                # Retry over TCP/53 when the UDP response was truncated.
+                try:
+                    resp = _query_tcp(qname, qtype_num, srv, timeout)
+                except Exception as tcp_exc:
+                    last_err = tcp_exc
+                    continue
+            return {
+                "server": srv,
+                "rcode": resp["rcode"],
+                "authenticated": resp["ad"],
+                "truncated_retried_tcp": resp["tc"],
+                "answers": resp["answers"],
+            }
         except Exception as exc:  # pragma: no cover - network paths
             last_err = exc
             continue
