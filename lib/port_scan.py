@@ -56,7 +56,8 @@ def _resolve(target):
     clean = target.strip("[]")
     try:
         infos = socket.getaddrinfo(clean, None, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
+    except (socket.gaierror, UnicodeError) as exc:
+        # UnicodeError happens when idna encoding can't handle odd inputs.
         return [], str(exc)
     seen = {}
     for family, _stype, _proto, _canon, sockaddr in infos:

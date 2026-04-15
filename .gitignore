@@ -13,6 +13,8 @@ venv/
 
 # Scan output (keep the directory via .gitkeep)
 results/*.json
+results/*.nmap.xml
+results/*.log
 
 # Portable binaries are user-supplied; do not commit them
 bin/nmap
