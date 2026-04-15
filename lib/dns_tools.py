@@ -7,6 +7,7 @@ and DMARC/SPF parsing.
 """
 import ipaddress
 import random
+import secrets
 import socket
 import struct
 
@@ -255,4 +256,181 @@ def full_lookup(target, server=None):
             ptr = query(arpa, "PTR", server=server)
             reverse.append({"ip": ip, "ptr": ptr.get("answers", [])})
     results["reverse"] = reverse
+
+    # New: attempt a zone transfer against every returned NS and parse SPF
+    # / DMARC records. Both are best-effort and never raise.
+    ns_hosts = [a["value"] for a in results["NS"].get("answers", []) if a.get("type") == "NS"]
+    if ns_hosts:
+        results["axfr"] = try_axfr(target, ns_hosts, server=server)
+    else:
+        results["axfr"] = []
+    results["email_auth"] = parse_email_auth(target, txt_answers=results["TXT"].get("answers", []), server=server)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Wildcard detection
+# ---------------------------------------------------------------------------
+
+def detect_wildcard(domain, server=None, tries=3):
+    """Probe the zone for wildcard records.
+
+    Returns {"is_wildcard", "ips", "cnames"} where is_wildcard is True when
+    any of the random probes returned at least one answer. Callers should
+    pass this into subdomain.enumerate so the brute-forcer can discard
+    hits that merely repeat the wildcard answer set.
+    """
+    ips = set()
+    cnames = set()
+    domain = domain.strip(".")
+    for _ in range(tries):
+        label = secrets.token_hex(6)
+        host = f"{label}.{domain}"
+        a_res = query(host, "A", server=server, timeout=2)
+        for ans in a_res.get("answers", []):
+            if ans.get("type") == "A":
+                ips.add(ans["value"])
+            elif ans.get("type") == "CNAME":
+                cnames.add(str(ans["value"]).rstrip("."))
+        cn_res = query(host, "CNAME", server=server, timeout=2)
+        for ans in cn_res.get("answers", []):
+            if ans.get("type") == "CNAME":
+                cnames.add(str(ans["value"]).rstrip("."))
+    return {
+        "is_wildcard": bool(ips or cnames),
+        "ips": sorted(ips),
+        "cnames": sorted(cnames),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Zone transfer (AXFR)
+# ---------------------------------------------------------------------------
+
+def _tcp_stream(sock, timeout):
+    """Yield DNS messages from a TCP stream using 2-byte length prefixes."""
+    sock.settimeout(timeout)
+    while True:
+        try:
+            header = _recv_exact(sock, 2)
+        except EOFError:
+            return
+        (rlen,) = struct.unpack(">H", header)
+        if rlen == 0:
+            return
+        try:
+            data = _recv_exact(sock, rlen)
+        except EOFError:
+            return
+        yield data
+
+
+def try_axfr(domain, nameservers, server=None, timeout=6):
+    """Attempt a zone transfer against each nameserver.
+
+    Returns a list of {"ns", "ok", "records"|"error"} entries. Most zones
+    refuse AXFR from arbitrary clients - that is the normal and expected
+    outcome and produces error="refused" here.
+    """
+    results = []
+    for ns in nameservers:
+        ns_clean = str(ns).rstrip(".")
+        ns_ip = _resolve_ns(ns_clean, server=server)
+        if not ns_ip:
+            results.append({"ns": ns_clean, "error": "unresolvable"})
+            continue
+        try:
+            _tid, pkt = _build_query(domain, RR_TYPES["AXFR"], use_edns=False)
+            records = []
+            soa_count = 0
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect((ns_ip, 53))
+                s.sendall(struct.pack(">H", len(pkt)) + pkt)
+                for data in _tcp_stream(s, timeout):
+                    resp = _parse_response(data)
+                    if resp["rcode"] != 0 and not resp["answers"]:
+                        results.append({
+                            "ns": ns_clean,
+                            "error": f"rcode {resp['rcode']} (likely refused)",
+                        })
+                        break
+                    for rr in resp["answers"]:
+                        records.append(rr)
+                        if rr["type"] == "SOA":
+                            soa_count += 1
+                    if soa_count >= 2:
+                        break
+                else:
+                    # Exhausted stream cleanly.
+                    if soa_count < 2:
+                        results.append({"ns": ns_clean, "error": "refused or incomplete"})
+                        continue
+                if records and soa_count >= 2:
+                    results.append({"ns": ns_clean, "ok": True, "records": records})
+        except Exception as exc:
+            results.append({"ns": ns_clean, "error": str(exc)})
+    return results
+
+
+def _resolve_ns(ns_name, server=None):
+    """Resolve an NS hostname to a single IPv4 address (best-effort)."""
+    # Try our own resolver first so we don't depend on the OS.
+    res = query(ns_name, "A", server=server, timeout=3)
+    for ans in res.get("answers", []):
+        if ans.get("type") == "A":
+            return ans["value"]
+    # Fall back to the OS resolver.
+    try:
+        return socket.gethostbyname(ns_name)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# DMARC / SPF helpers
+# ---------------------------------------------------------------------------
+
+def _tag_value_parse(blob):
+    """Parse a tag=value; tag=value; ... DNS TXT payload into a dict."""
+    out = {}
+    for part in blob.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip().lower()] = v.strip()
+    return out
+
+
+def parse_email_auth(domain, txt_answers=None, server=None):
+    """Extract SPF and DMARC records for a domain.
+
+    `txt_answers` is optional; when provided it should be the already-fetched
+    TXT answers from full_lookup. DMARC is always queried separately under
+    _dmarc.<domain>.
+    """
+    spf = None
+    if txt_answers is None:
+        txt_res = query(domain, "TXT", server=server)
+        txt_answers = txt_res.get("answers", [])
+    for ans in txt_answers:
+        val = str(ans.get("value", ""))
+        if val.startswith("v=spf1"):
+            spf = {
+                "raw": val,
+                "mechanisms": val.split()[1:],
+            }
+            break
+
+    dmarc = None
+    try:
+        dres = query("_dmarc." + domain.strip("."), "TXT", server=server, timeout=3)
+        for ans in dres.get("answers", []):
+            val = str(ans.get("value", ""))
+            if val.lower().startswith("v=dmarc1"):
+                dmarc = {"raw": val, "fields": _tag_value_parse(val)}
+                break
+    except Exception as exc:  # pragma: no cover
+        dmarc = {"error": str(exc)}
+
+    return {"spf": spf, "dmarc": dmarc}
