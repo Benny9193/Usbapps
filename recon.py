@@ -26,6 +26,7 @@ from lib import (
     exporters,
     logutil,
     nmap_runner,
+    password_crack,
     port_scan,
     report,
     scheduler,
@@ -273,6 +274,118 @@ def cmd_whois(args):
         if _has_error(session):
             any_error = True
     return 2 if any_error else 0
+
+
+def cmd_crack(args):
+    """Run the password hash cracker.
+
+    Targets come from ``--hash`` (repeatable) and/or ``--hash-file``.
+    At least one of ``--wordlist`` or ``--brute-force`` must be given.
+    Results are persisted as a normal session under ``results/`` with
+    ``scan_type = "crack"``, so they show up in ``recon list`` and the
+    dashboard's sidebar alongside the scan sessions.
+
+    Intended for authorised password-policy audits. Only run this
+    against hashes you have permission to test - see the README's
+    Responsible Use section.
+    """
+    try:
+        encrypt_password = _resolve_save_password(args)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+
+    algo_override = args.algorithm if args.algorithm != "auto" else None
+
+    targets = []
+    if args.hash:
+        for h in args.hash:
+            parsed = password_crack.parse_hash_line(
+                h, default_algo=algo_override, default_salt=args.salt,
+            )
+            if parsed is not None:
+                targets.append(parsed)
+    if args.hash_file:
+        try:
+            targets.extend(
+                password_crack.load_hash_file(
+                    args.hash_file,
+                    default_algo=algo_override,
+                    default_salt=args.salt,
+                )
+            )
+        except OSError as exc:
+            log.error("Could not read hash file: %s", exc)
+            return 2
+
+    if not targets:
+        log.error("No hashes to crack (use --hash and/or --hash-file)")
+        return 2
+
+    unknown = [t for t in targets if not t.get("algo")]
+    if unknown:
+        log.warning(
+            "%d hash(es) have no recognised algorithm and will be skipped "
+            "(use --algorithm to force one)", len(unknown),
+        )
+
+    wl = _resolve_wordlist(args.wordlist) if args.wordlist else None
+    if args.wordlist and not wl:
+        log.error("Wordlist not found: %s", args.wordlist)
+        return 2
+
+    brute_force = None
+    if args.brute_force:
+        brute_force = {
+            "charset": args.charset,
+            "min_length": args.min_length,
+            "max_length": args.max_length,
+        }
+
+    if not wl and not brute_force:
+        log.error("crack: need --wordlist and/or --brute-force")
+        return 2
+
+    target_label = args.target_label or (
+        Path(args.hash_file).stem if args.hash_file else f"{len(targets)}_hashes"
+    )
+    session = report.new_session(target_label, "crack")
+    log.info(
+        "Cracking %d hash(es) using %s",
+        len(targets),
+        f"wordlist={wl}" + (" +rules" if args.rules else "") if wl else
+        f"brute-force charset={len(args.charset)} len={args.min_length}-{args.max_length}",
+    )
+
+    try:
+        result = password_crack.crack(
+            targets,
+            wordlist=str(wl) if wl else None,
+            rules=args.rules,
+            brute_force=brute_force,
+            timeout=args.timeout,
+            max_candidates=args.max_candidates,
+        )
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+
+    session["crack"] = result
+    report.save_session(session, encrypt_password=encrypt_password)
+    saved = session["_path"] + crypto.EXTENSION if encrypt_password else session["_path"]
+    log.info("Saved %s", saved)
+    log.info(
+        "Cracked %d/%d in %ss (%d candidates tested, stopped: %s)",
+        len(result["cracked"]),
+        result["targets"],
+        result["elapsed_seconds"],
+        result["tested"],
+        result["stopped_reason"],
+    )
+    # "Nothing cracked" is a valid outcome for a password audit, not an
+    # error. Only return non-zero when the session payload itself grew
+    # an explicit error field (matches scan/dns/whois conventions).
+    return 2 if _has_error(session) else 0
 
 
 def _run_full_one(target, args, encrypt_password=None):
@@ -978,6 +1091,45 @@ def build_parser():
     p.add_argument("--wordlist", help="Subdomain wordlist")
     p.add_argument("--no-nmap", action="store_true")
     p.set_defaults(func=cmd_full)
+
+    p = sub.add_parser(
+        "crack",
+        help="Crack password hashes via wordlist and/or brute force (authorised audits)",
+    )
+    p.add_argument("--hash", action="append", default=None,
+                   help="Raw hash to crack (repeatable). Accepts bare hex, "
+                        "`label:hash`, `label:hash:salt`, or `$id$salt$hash`.")
+    p.add_argument("--hash-file", dest="hash_file",
+                   help="File of hashes, one per line (shadow-style entries supported)")
+    p.add_argument("--wordlist", help="Dictionary file to walk through")
+    p.add_argument("--algorithm",
+                   choices=["auto", "md5", "sha1", "sha224", "sha256",
+                            "sha384", "sha512", "ntlm"],
+                   default="auto",
+                   help="Force the algorithm (default: auto-detect by length). "
+                        "Use `ntlm` to disambiguate from MD5.")
+    p.add_argument("--salt",
+                   help="Salt applied to every target without an inline one. "
+                        "Both append and prepend positions are tried.")
+    p.add_argument("--rules", action="store_true",
+                   help="Apply the built-in mangling rules (case + common "
+                        "suffixes) to each wordlist entry")
+    p.add_argument("--brute-force", dest="brute_force", action="store_true",
+                   help="Brute-force the charset up to --max-length after "
+                        "the wordlist (if any) is exhausted")
+    p.add_argument("--charset", default="abcdefghijklmnopqrstuvwxyz0123456789",
+                   help="Brute-force charset (default: lowercase + digits)")
+    p.add_argument("--min-length", dest="min_length", type=int, default=1,
+                   help="Minimum brute-force length (default: 1)")
+    p.add_argument("--max-length", dest="max_length", type=int, default=4,
+                   help="Maximum brute-force length, hard-capped at 8 (default: 4)")
+    p.add_argument("--timeout", type=float,
+                   help="Abort after this many wall-clock seconds")
+    p.add_argument("--max-candidates", dest="max_candidates", type=int,
+                   help="Abort after this many candidates have been tested")
+    p.add_argument("--target-label", dest="target_label",
+                   help="Override the session's target label (default: hash filename or count)")
+    p.set_defaults(func=cmd_crack)
 
     p = sub.add_parser("dashboard", help="Launch the visual dashboard")
     p.add_argument("--host", default="127.0.0.1")
