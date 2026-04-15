@@ -1,5 +1,4 @@
 """Nmap wrapper - locates binary and parses XML output into JSON."""
-import os
 import platform
 import shutil
 import subprocess
@@ -9,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "bin"
+RESULTS = ROOT / "results"
 
 # Profile flags are appended to the nmap binary when the user selects them.
 # Keep them intentionally modest so they run on unprivileged Windows/Linux
@@ -40,7 +40,13 @@ def is_available():
     return find_binary() is not None
 
 
-def scan(target, profile="default", ports=None):
+def scan(target, profile="default", ports=None, session_id=None, timeout=600):
+    """Run Nmap and return the parsed XML as a JSON-friendly dict.
+
+    When session_id is provided, the raw XML is archived at
+    results/<session_id>.nmap.xml so downstream tooling can re-parse the
+    exact output. Otherwise a tempfile is used and removed on exit.
+    """
     binary = find_binary()
     if not binary:
         return {"error": "Nmap not found. Place portable nmap in bin/ or install it."}
@@ -62,12 +68,18 @@ def scan(target, profile="default", ports=None):
             cleaned.append(flag)
         flags = cleaned + ["-p", ports]
 
-    with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tmp:
-        xml_path = tmp.name
+    archive_path = None
+    if session_id:
+        RESULTS.mkdir(exist_ok=True)
+        archive_path = RESULTS / f"{session_id}.nmap.xml"
+        xml_path = str(archive_path)
+    else:
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tmp:
+            xml_path = tmp.name
 
     cmd = [binary] + flags + ["-oX", xml_path, target]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if proc.returncode not in (0, 1):
             return {
                 "command": " ".join(cmd),
@@ -77,16 +89,29 @@ def scan(target, profile="default", ports=None):
         result = parse_xml(xml_path)
         result["command"] = " ".join(cmd)
         result["profile"] = profile
+        if archive_path is not None:
+            result["xml_path"] = str(archive_path)
         return result
     except subprocess.TimeoutExpired:
-        return {"command": " ".join(cmd), "error": "nmap timeout (600s)"}
+        return {"command": " ".join(cmd), "error": f"nmap timeout ({timeout}s)"}
     except FileNotFoundError as exc:
         return {"command": " ".join(cmd), "error": str(exc)}
     finally:
-        try:
-            os.unlink(xml_path)
-        except OSError:
-            pass
+        # Only clean up tempfile fallbacks; archived XML stays put.
+        if archive_path is None:
+            try:
+                Path(xml_path).unlink()
+            except OSError:
+                pass
+
+
+def _parse_scripts(element):
+    out = []
+    if element is None:
+        return out
+    for s in element.findall("script"):
+        out.append({"id": s.get("id"), "output": s.get("output")})
+    return out
 
 
 def parse_xml(xml_path):
@@ -116,9 +141,6 @@ def parse_xml(xml_path):
             for p in pe.findall("port"):
                 pstate = p.find("state")
                 svc = p.find("service")
-                scripts = []
-                for s in p.findall("script"):
-                    scripts.append({"id": s.get("id"), "output": s.get("output")})
                 ports.append({
                     "port": int(p.get("portid")),
                     "protocol": p.get("protocol"),
@@ -127,25 +149,71 @@ def parse_xml(xml_path):
                     "product": svc.get("product") if svc is not None else None,
                     "version": svc.get("version") if svc is not None else None,
                     "extra_info": svc.get("extrainfo") if svc is not None else None,
-                    "scripts": scripts,
+                    "scripts": _parse_scripts(p),
                 })
 
-        os_info = None
+        # Full osmatch list with accuracies, plus any embedded osclass entries.
+        os_matches = []
         oe = host.find("os")
         if oe is not None:
-            match = oe.find("osmatch")
-            if match is not None:
-                os_info = {
+            for match in oe.findall("osmatch"):
+                classes = []
+                for osc in match.findall("osclass"):
+                    classes.append({
+                        "type": osc.get("type"),
+                        "vendor": osc.get("vendor"),
+                        "family": osc.get("osfamily"),
+                        "gen": osc.get("osgen"),
+                        "accuracy": osc.get("accuracy"),
+                    })
+                os_matches.append({
                     "name": match.get("name"),
                     "accuracy": match.get("accuracy"),
-                }
+                    "line": match.get("line"),
+                    "classes": classes,
+                })
+
+        # Host-level scripts (hostscript/script), e.g. smb-os-discovery, http-enum.
+        host_scripts = _parse_scripts(host.find("hostscript"))
+
+        # Uptime and hop distance are cheap extras the XML already contains.
+        uptime = None
+        ue = host.find("uptime")
+        if ue is not None:
+            uptime = {
+                "seconds": ue.get("seconds"),
+                "lastboot": ue.get("lastboot"),
+            }
+        distance = None
+        de = host.find("distance")
+        if de is not None:
+            distance = de.get("value")
+
+        # Traceroute hops: nmap emits these when a TTL scan runs.
+        hops = []
+        te = host.find("trace")
+        if te is not None:
+            for hop in te.findall("hop"):
+                hops.append({
+                    "ttl": hop.get("ttl"),
+                    "ipaddr": hop.get("ipaddr"),
+                    "rtt": hop.get("rtt"),
+                    "host": hop.get("host"),
+                })
 
         hosts.append({
             "address": addr,
             "state": state,
             "hostnames": hostnames,
             "ports": ports,
-            "os": os_info,
+            # Keep the old single-match field for the dashboard's existing
+            # renderer, but also expose the full list.
+            "os": os_matches[0] if os_matches else None,
+            "os_matches": os_matches,
+            "host_scripts": host_scripts,
+            "uptime": uptime,
+            "distance": distance,
+            "trace": hops,
         })
 
     return {

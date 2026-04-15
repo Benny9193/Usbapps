@@ -47,7 +47,12 @@ def cmd_scan(args):
 
     if not args.no_nmap and nmap_runner.is_available():
         log.info("Nmap (%s) -> %s", args.profile, target)
-        session["nmap"] = nmap_runner.scan(target, profile=args.profile, ports=args.ports)
+        session["nmap"] = nmap_runner.scan(
+            target,
+            profile=args.profile,
+            ports=args.ports,
+            session_id=session["_id"],
+        )
     else:
         if not args.no_nmap:
             log.warning("Nmap not found, using Python TCP connect scanner")
@@ -120,7 +125,9 @@ def cmd_full(args):
 
     if not args.no_nmap and nmap_runner.is_available():
         log.info("[4/4] Nmap (%s) scan", args.profile)
-        session["nmap"] = nmap_runner.scan(target, profile=args.profile)
+        session["nmap"] = nmap_runner.scan(
+            target, profile=args.profile, session_id=session["_id"]
+        )
     else:
         log.info("[4/4] Python TCP connect scan")
         session["port_scan"] = port_scan.scan(target, ports="1-1024")
