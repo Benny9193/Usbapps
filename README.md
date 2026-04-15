@@ -20,22 +20,29 @@ Usbapps/
   launch.sh           Linux / macOS launcher
   recon.py            CLI entry point
   lib/                Toolkit modules (stdlib-only Python)
-    nmap_runner.py    Nmap wrapper + XML parser
-    dns_tools.py      Pure-Python DNS resolver (A/AAAA/NS/MX/TXT/SOA/CAA...)
-    port_scan.py      Threaded TCP connect scanner (Nmap fallback)
-    whois_tool.py     WHOIS client with IANA referral chasing
-    subdomain.py      Threaded subdomain brute force
-    report.py         Session persistence / index for the dashboard
-    dashboard.py      Local HTTP server
+    nmap_runner.py    Nmap wrapper + rich XML parser (archives raw XML)
+    dns_tools.py      Pure-Python DNS resolver (EDNS0, TCP fallback,
+                      wildcard detection, AXFR, DMARC/SPF)
+    port_scan.py      Threaded TCP/UDP scanner (IPv4 + IPv6)
+    whois_tool.py     WHOIS client - IP-aware, chases referrals
+    subdomain.py      Threaded subdomain brute force with wildcard filter
+    report.py         Session persistence with mtime-cached index
+    dashboard.py      Threaded local HTTP server (whitelisted, optional auth)
+    logutil.py        Central logger with [+] / [!] / [-] prefixes
+    differ.py         Session-to-session diff
+    exporters.py      Markdown / HTML / CSV renderers
+    netproxy.py       Optional HTTP CONNECT proxy client
   dashboard/
     index.html        Single-page UI
     style.css         Dark hacker-style theme
     app.js            Vanilla JS client (no frameworks)
   bin/                Drop portable Nmap / Python binaries here
   config/
+    recon.toml        Optional defaults (TOML, Python 3.11+)
     wordlists/
       subdomains.txt  Built-in subdomain wordlist (~200 entries)
-  results/            Per-scan JSON files + index.json (created on demand)
+  results/            Per-scan JSON files + nmap XML + index.json
+  tests/              stdlib unittest suite - `python -m unittest discover -s tests`
 ```
 
 ---
@@ -78,20 +85,43 @@ python3 recon.py full example.com
 
 ## CLI reference
 
+Top-level flags (apply to every subcommand):
+
 ```
-recon scan TARGET [--profile {quick,default,full,service,stealth}]
+recon [-v | -q] [--log-file PATH] <subcommand> ...
+```
+
+Subcommands:
+
+```
+recon scan TARGET [-iL file] [--profile {quick,default,full,service,stealth}]
                   [--ports 1-1024|22,80,443] [--no-nmap]
 
-recon dns  TARGET [--server 1.1.1.1] [--wordlist PATH]
+recon dns  TARGET [-iL file] [--server 1.1.1.1] [--wordlist PATH]
 
-recon whois TARGET
+recon whois TARGET [-iL file]
 
-recon full TARGET [--profile ...] [--wordlist PATH] [--no-nmap]
+recon full TARGET [-iL file] [--profile ...] [--wordlist PATH] [--no-nmap]
 
 recon dashboard [--host 127.0.0.1] [--port 8787] [--no-browser]
+                [--token TOKEN | --auth]
 
 recon list
+recon diff   <session-id-a> <session-id-b>
+recon export <session-id> [--format {md,html,csv}] [-o FILE]
+recon delete <session-id> [<session-id> ...]
+recon purge  --older-than-days N [--dry-run]
 ```
+
+`TARGET` may be a hostname, an IPv4/IPv6 address, a CIDR block
+(`10.0.0.0/24`), or a comma-separated list. `-iL FILE` reads one target
+per line (# comments are allowed). Multiple targets produce one session
+per host. The CLI returns exit code 0 on success, 2 if any module
+reports an `error` field, 130 on Ctrl-C.
+
+`recon full` now runs DNS, WHOIS, and subdomain brute-force concurrently
+and pre-computes the wildcard answer set once so the workers share a
+consistent baseline. Nmap still runs last.
 
 Nmap profiles:
 
@@ -104,8 +134,21 @@ Nmap profiles:
 | `stealth` | `-T2 -sS -f`                                  | SYN scan, needs root          |
 
 Pass `--no-nmap` (or simply do not place an Nmap binary on the system) to use
-the Python TCP connect scanner. It supports banner grabs and the most common
-service mappings.
+the Python TCP connect scanner. It supports IPv4+IPv6, protocol-aware
+banner grabs (HTTP HEAD, SMTP EHLO, ...), and a UDP probe mode for
+DNS/NTP/SNMP/IKEv1/SSDP via `--protocol udp`.
+
+## Configuration file
+
+`config/recon.toml` is optional. When present, it is loaded at startup
+(Python 3.11+) and its values become argparse defaults, so explicit
+flags still win. See the shipped sample for the honored keys.
+
+## HTTP proxy
+
+The WHOIS client honours `HTTPS_PROXY` / `ALL_PROXY`, speaking HTTP
+CONNECT through the proxy. UDP-based paths (DNS, UDP port scanner)
+stay direct because CONNECT cannot tunnel UDP.
 
 ## Dashboard
 
@@ -119,6 +162,25 @@ service mappings.
 
 The sidebar search filters sessions by target or type. Sessions auto-refresh
 every 10 seconds so live scans populate without manual reloads.
+
+The dashboard only serves `/dashboard/` and `/results/`; everything else
+returns 404, path traversal is rejected, and strict security headers
+(CSP, X-Frame-Options, Referrer-Policy, no-sniff) are sent on every
+response. Passing `--auth` to `recon dashboard` generates a bearer
+token and requires it via header, cookie, or one-shot `?token=...` URL
+parameter before serving anything.
+
+---
+
+## Tests
+
+```
+python -m unittest discover -s tests -v
+```
+
+The suite uses stdlib `unittest` only and never reaches the network;
+resolvers and sockets are either monkey-patched or point at 127.0.0.1
+listeners started inside the tests.
 
 ---
 
