@@ -1,7 +1,9 @@
 """Subdomain brute force via DNS A-record lookups."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import dns_tools
+from . import dns_tools, logutil
+
+log = logutil.get("subdomain")
 
 
 def _check(domain, word, server):
@@ -25,7 +27,7 @@ def enumerate(domain, wordlist_path, server=None, workers=32):
                 continue
             if ips:
                 found.append({"subdomain": host, "ips": ips})
-                print(f"  [+] {host} -> {', '.join(ips)}")
+                log.info("  %s -> %s", host, ", ".join(ips))
 
     found.sort(key=lambda x: x["subdomain"])
     return {

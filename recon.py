@@ -15,11 +15,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from lib import dashboard, dns_tools, nmap_runner, port_scan, report, subdomain, whois_tool
+from lib import (
+    dashboard,
+    dns_tools,
+    logutil,
+    nmap_runner,
+    port_scan,
+    report,
+    subdomain,
+    whois_tool,
+)
+
+log = logutil.get()
 
 
 def _print_banner():
-    print(r"""
+    sys.stdout.write(r"""
    ____                        _____           _ _    _ _
   |  _ \ ___  ___ ___  _ __   |_   _|__   ___ | | | _(_) |_
   | |_) / _ \/ __/ _ \| '_ \    | |/ _ \ / _ \| | |/ / | __|
@@ -27,6 +38,7 @@ def _print_banner():
   |_| \_\___|\___\___/|_| |_|   |_|\___/ \___/|_|_|\_\_|\__|
             portable recon toolkit - usb edition
 """)
+    sys.stdout.flush()
 
 
 def cmd_scan(args):
@@ -34,22 +46,22 @@ def cmd_scan(args):
     session = report.new_session(target, "scan")
 
     if not args.no_nmap and nmap_runner.is_available():
-        print(f"[+] Nmap ({args.profile}) -> {target}")
+        log.info("Nmap (%s) -> %s", args.profile, target)
         session["nmap"] = nmap_runner.scan(target, profile=args.profile, ports=args.ports)
     else:
         if not args.no_nmap:
-            print("[!] Nmap not found, using Python TCP connect scanner")
-        print(f"[+] python-portscan -> {target}")
+            log.warning("Nmap not found, using Python TCP connect scanner")
+        log.info("python-portscan -> %s", target)
         session["port_scan"] = port_scan.scan(target, ports=args.ports or "1-1024")
 
     report.save_session(session)
-    print(f"[+] Saved {session['_path']}")
+    log.info("Saved %s", session["_path"])
 
 
 def cmd_dns(args):
     target = args.target
     session = report.new_session(target, "dns")
-    print(f"[+] DNS reconnaissance on {target}")
+    log.info("DNS reconnaissance on %s", target)
     session["dns"] = dns_tools.full_lookup(target, server=args.server)
 
     if args.wordlist:
@@ -57,35 +69,35 @@ def cmd_dns(args):
         if not wl.is_file():
             wl = ROOT / args.wordlist
         if wl.is_file():
-            print(f"[+] Subdomain brute-force with {wl}")
+            log.info("Subdomain brute-force with %s", wl)
             session["subdomains"] = subdomain.enumerate(target, str(wl), server=args.server)
         else:
-            print(f"[!] Wordlist not found: {args.wordlist}")
+            log.warning("Wordlist not found: %s", args.wordlist)
 
     report.save_session(session)
-    print(f"[+] Saved {session['_path']}")
+    log.info("Saved %s", session["_path"])
 
 
 def cmd_whois(args):
     target = args.target
     session = report.new_session(target, "whois")
-    print(f"[+] WHOIS lookup for {target}")
+    log.info("WHOIS lookup for %s", target)
     session["whois"] = whois_tool.lookup(target)
     report.save_session(session)
-    print(f"[+] Saved {session['_path']}")
+    log.info("Saved %s", session["_path"])
 
 
 def cmd_full(args):
     target = args.target
     session = report.new_session(target, "full")
 
-    print(f"[+] [1/4] DNS reconnaissance on {target}")
+    log.info("[1/4] DNS reconnaissance on %s", target)
     try:
         session["dns"] = dns_tools.full_lookup(target)
     except Exception as exc:
         session["dns"] = {"error": str(exc)}
 
-    print(f"[+] [2/4] WHOIS lookup")
+    log.info("[2/4] WHOIS lookup")
     try:
         session["whois"] = whois_tool.lookup(target)
     except Exception as exc:
@@ -96,25 +108,25 @@ def cmd_full(args):
         if not wl.is_file():
             wl = ROOT / args.wordlist
         if wl.is_file():
-            print(f"[+] [3/4] Subdomain brute-force")
+            log.info("[3/4] Subdomain brute-force")
             try:
                 session["subdomains"] = subdomain.enumerate(target, str(wl))
             except Exception as exc:
                 session["subdomains"] = {"error": str(exc)}
         else:
-            print(f"[!] [3/4] Wordlist not found: {args.wordlist}")
+            log.warning("[3/4] Wordlist not found: %s", args.wordlist)
     else:
-        print("[-] [3/4] Subdomain brute-force skipped (no --wordlist)")
+        log.debug("[3/4] Subdomain brute-force skipped (no --wordlist)")
 
     if not args.no_nmap and nmap_runner.is_available():
-        print(f"[+] [4/4] Nmap ({args.profile}) scan")
+        log.info("[4/4] Nmap (%s) scan", args.profile)
         session["nmap"] = nmap_runner.scan(target, profile=args.profile)
     else:
-        print("[+] [4/4] Python TCP connect scan")
+        log.info("[4/4] Python TCP connect scan")
         session["port_scan"] = port_scan.scan(target, ports="1-1024")
 
     report.save_session(session)
-    print(f"[+] Saved {session['_path']}")
+    log.info("Saved %s", session["_path"])
 
 
 def cmd_dashboard(args):
@@ -124,11 +136,14 @@ def cmd_dashboard(args):
 def cmd_list(args):
     sessions = report.list_sessions()
     if not sessions:
-        print("[-] No sessions found. Run a scan first.")
+        log.warning("No sessions found. Run a scan first.")
         return
-    print(f"[+] {len(sessions)} session(s):")
+    log.info("%d session(s):", len(sessions))
     for s in sessions:
-        print(f"  {s.get('created', '-'):<18} {s.get('scan_type', '-'):<8} {s.get('target', '-')}")
+        sys.stdout.write(
+            f"  {s.get('created', '-'):<18} {s.get('scan_type', '-'):<8} {s.get('target', '-')}\n"
+        )
+    sys.stdout.flush()
 
 
 def build_parser():
@@ -136,6 +151,12 @@ def build_parser():
         prog="recon",
         description="Portable Recon Toolkit - Nmap + DNS + dashboard",
     )
+    parser.add_argument("-v", "--verbose", action="count", default=0,
+                        help="Increase log verbosity (-v for debug)")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="Suppress info output (warnings and errors only)")
+    parser.add_argument("--log-file", metavar="PATH",
+                        help="Mirror log output to this file")
     sub = parser.add_subparsers(dest="cmd")
 
     p = sub.add_parser("scan", help="Port scan with Nmap (or Python fallback)")
@@ -178,16 +199,18 @@ def build_parser():
 
 
 def main():
-    _print_banner()
     parser = build_parser()
     args = parser.parse_args()
+    logutil.setup(verbosity=args.verbose, quiet=args.quiet, log_file=args.log_file)
+    if not args.quiet:
+        _print_banner()
     if not getattr(args, "func", None):
         parser.print_help()
         return
     try:
         args.func(args)
     except KeyboardInterrupt:
-        print("\n[!] Interrupted")
+        sys.stderr.write("\n[!] Interrupted\n")
         sys.exit(130)
 
 
