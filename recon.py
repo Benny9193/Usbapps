@@ -26,6 +26,7 @@ from lib import (
     nmap_runner,
     port_scan,
     report,
+    scheduler,
     subdomain,
     whois_tool,
 )
@@ -403,8 +404,122 @@ def cmd_dashboard(args):
         open_browser=not args.no_browser,
         token=args.token,
         require_auth=args.auth,
+        run_scheduler=getattr(args, "scheduler", False),
     )
     return 0
+
+
+def _fmt_schedule_row(s):
+    last_run = s.get("last_run_epoch") or 0
+    last_str = (
+        __import__("time").strftime("%Y-%m-%d %H:%M:%S",
+                                    __import__("time").localtime(last_run))
+        if last_run else "-"
+    )
+    enabled = "on" if s.get("enabled", True) else "off"
+    status = s.get("last_status") or "-"
+    target = s.get("target") or "?"
+    workflow = s.get("workflow") or "?"
+    interval = s.get("interval") or f"{s.get('interval_seconds', '?')}s"
+    sid = s.get("id") or "-"
+    return f"  {sid:<32} {enabled:<4} {workflow:<5} {interval:<6} {last_str:<20} {status:<10} {target}"
+
+
+def cmd_schedule(args):
+    action = getattr(args, "schedule_action", None)
+    if action is None:
+        log.error("schedule: missing action (add/list/remove/enable/disable/run/daemon)")
+        return 2
+
+    if action == "add":
+        opts = {}
+        for key in ("profile", "wordlist", "ports", "server"):
+            val = getattr(args, key, None)
+            if val is not None:
+                opts[key] = val
+        if getattr(args, "no_nmap", False):
+            opts["no_nmap"] = True
+        try:
+            entry = scheduler.add_schedule(
+                args.target, args.workflow, args.every,
+                options=opts, enabled=not args.disabled,
+            )
+        except ValueError as exc:
+            log.error("%s", exc)
+            return 2
+        log.info(
+            "Added schedule %s (%s %s every %s)",
+            entry["id"], entry["workflow"], entry["target"], entry["interval"],
+        )
+        return 0
+
+    if action == "list":
+        schedules = scheduler.load_schedules()
+        if not schedules:
+            log.warning("No schedules defined. Add one with: recon schedule add ...")
+            return 0
+        log.info("%d schedule(s):", len(schedules))
+        sys.stdout.write(
+            f"  {'ID':<32} {'ST':<4} {'WF':<5} {'EVRY':<6} {'LAST RUN':<20} {'STATUS':<10} TARGET\n"
+        )
+        for s in schedules:
+            sys.stdout.write(_fmt_schedule_row(s) + "\n")
+        sys.stdout.flush()
+        return 0
+
+    if action == "remove":
+        if scheduler.remove_schedule(args.id):
+            log.info("Removed schedule %s", args.id)
+            return 0
+        log.warning("No schedule with id: %s", args.id)
+        return 2
+
+    if action == "enable":
+        if scheduler.set_enabled(args.id, True):
+            log.info("Enabled schedule %s", args.id)
+            return 0
+        log.warning("No schedule with id: %s", args.id)
+        return 2
+
+    if action == "disable":
+        if scheduler.set_enabled(args.id, False):
+            log.info("Disabled schedule %s", args.id)
+            return 0
+        log.warning("No schedule with id: %s", args.id)
+        return 2
+
+    if action == "run":
+        schedules = scheduler.load_schedules()
+        if args.id:
+            schedules = [s for s in schedules if s.get("id") == args.id]
+            if not schedules:
+                log.error("No schedule with id: %s", args.id)
+                return 2
+        if not schedules:
+            log.warning("No schedules to run")
+            return 0
+        any_error = False
+        for entry in schedules:
+            session = scheduler.run_once(entry)
+            if session is None or _has_error(session):
+                any_error = True
+        return 2 if any_error else 0
+
+    if action == "daemon":
+        import time as _time
+        sched_obj = scheduler.start_default()
+        log.info("Scheduler daemon running. Press Ctrl+C to stop.")
+        try:
+            while sched_obj.is_running():
+                _time.sleep(1.0)
+        except KeyboardInterrupt:
+            sys.stderr.write("\n[+] Scheduler stopped\n")
+        finally:
+            scheduler.stop_default(timeout=2.0)
+        return 0
+
+    log.error("Unknown schedule action: %s", action)
+    return 2
 
 
 def cmd_list(args):
@@ -476,7 +591,49 @@ def build_parser():
     p.add_argument("--token", help="Require this bearer token / cookie for access")
     p.add_argument("--auth", action="store_true",
                    help="Generate a random token and print it (implies auth)")
+    p.add_argument("--scheduler", action="store_true",
+                   help="Start the recurring-scan scheduler alongside the dashboard")
     p.set_defaults(func=cmd_dashboard)
+
+    p = sub.add_parser("schedule",
+                       help="Manage recurring scans (add/list/remove/enable/disable/run/daemon)")
+    sch_sub = p.add_subparsers(dest="schedule_action")
+
+    p_add = sch_sub.add_parser("add", help="Add a new schedule")
+    p_add.add_argument("target", help="Target host, IP, CIDR, or comma-separated list")
+    p_add.add_argument("workflow", choices=list(scheduler.VALID_WORKFLOWS),
+                       help="Which recon workflow to run on each fire")
+    p_add.add_argument("--every", required=True,
+                       help="Interval like 30s, 5m, 1h, 1d")
+    p_add.add_argument("--profile", help="Nmap profile (scan/full)")
+    p_add.add_argument("--wordlist", help="Subdomain wordlist (dns/full)")
+    p_add.add_argument("--ports", help="Port spec (scan)")
+    p_add.add_argument("--server", help="DNS server (dns)")
+    p_add.add_argument("--no-nmap", action="store_true",
+                       help="Force Python TCP fallback (scan/full)")
+    p_add.add_argument("--disabled", action="store_true",
+                       help="Create the schedule in the disabled state")
+
+    sch_sub.add_parser("list", help="List all schedules")
+
+    p_rm = sch_sub.add_parser("remove", help="Delete a schedule by id")
+    p_rm.add_argument("id")
+
+    p_en = sch_sub.add_parser("enable", help="Enable a schedule by id")
+    p_en.add_argument("id")
+
+    p_dis = sch_sub.add_parser("disable", help="Disable a schedule by id")
+    p_dis.add_argument("id")
+
+    p_run = sch_sub.add_parser("run",
+                               help="Run schedules once now (all, or by id)")
+    p_run.add_argument("id", nargs="?",
+                       help="Specific schedule id (default: all enabled)")
+
+    sch_sub.add_parser("daemon",
+                       help="Run the scheduler in the foreground until Ctrl-C")
+
+    p.set_defaults(func=cmd_schedule)
 
     p = sub.add_parser("list", help="List previous scan sessions")
     p.set_defaults(func=cmd_list)

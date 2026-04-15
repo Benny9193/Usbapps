@@ -176,6 +176,44 @@ main {
 .s-type.dns { background: rgba(110, 195, 255, 0.2); color: var(--info); }
 .s-type.scan { background: rgba(199, 146, 234, 0.2); color: var(--purple); }
 .s-type.whois { background: rgba(255, 180, 84, 0.2); color: var(--warn); }
+.s-type.diff { background: rgba(255, 180, 84, 0.2); color: var(--warn); }
+
+#schedulesHeading { margin-top: 18px; }
+#schedulesList { list-style: none; }
+#schedulesList li {
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: var(--panel);
+  transition: all 0.15s ease;
+}
+#schedulesList li:hover {
+  background: var(--panel-alt);
+  border-color: var(--border-alt);
+}
+
+.sched-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  margin: 0 6px;
+  vertical-align: middle;
+}
+.sched-dot.clean { background: var(--accent); box-shadow: 0 0 6px rgba(94, 226, 164, 0.6); }
+.sched-dot.changed { background: var(--warn); box-shadow: 0 0 6px rgba(255, 180, 84, 0.6); }
+.sched-dot.err { background: var(--crit); box-shadow: 0 0 6px rgba(255, 95, 109, 0.6); }
+.sched-dot.off { background: var(--muted); opacity: 0.4; }
+.sched-dot.pending { background: var(--info); }
+
+.sched-every {
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
 
 #hint {
   margin-top: 24px;

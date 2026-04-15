@@ -20,7 +20,16 @@ def _safe(value):
 def new_session(target, scan_type):
     RESULTS.mkdir(exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
-    sid = f"{ts}_{scan_type}_{_safe(target)}"
+    base = f"{ts}_{scan_type}_{_safe(target)}"
+    # Guard against sub-second collisions. Two sessions with the same
+    # target + scan_type that land in the same wall-clock second used to
+    # overwrite each other on disk; the scheduler in particular can hit
+    # this when a recurring job fires faster than the timestamp rolls.
+    sid = base
+    n = 2
+    while (RESULTS / f"{sid}.json").exists():
+        sid = f"{base}-{n}"
+        n += 1
     return {
         "_id": sid,
         "_path": str(RESULTS / f"{sid}.json"),

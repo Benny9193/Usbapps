@@ -23,6 +23,8 @@
     <aside id="sidebar">
       <h2>Sessions</h2>
       <ul id="sessionList"></ul>
+      <h2 id="schedulesHeading" hidden>Schedules</h2>
+      <ul id="schedulesList" hidden></ul>
       <div id="hint">
         <p>No data yet?</p>
         <p>Run a scan from the command line:</p>
@@ -42,6 +44,7 @@
         <div id="header-card" class="card header-card"></div>
         <div class="tabs" role="tablist">
           <button class="tab active" data-tab="summary">Summary</button>
+          <button class="tab" data-tab="changes">Changes</button>
           <button class="tab" data-tab="nmap">Nmap</button>
           <button class="tab" data-tab="ports">Ports</button>
           <button class="tab" data-tab="dns">DNS</button>
