@@ -34,6 +34,7 @@ Usbapps/
     exporters.py      Markdown / HTML / CSV renderers
     netproxy.py       Optional HTTP CONNECT proxy client
     crypto.py         Password-based AEAD for results (scrypt + HMAC-SHA256)
+    password_crack.py Hash auditor (md5/sha*/ntlm/$id$, dict + brute-force)
   dashboard/
     index.html        Single-page UI
     style.css         Dark hacker-style theme
@@ -114,6 +115,12 @@ recon diff   <session-id-a> <session-id-b>
 recon export <session-id> [--format {md,html,csv}] [-o FILE]
 recon delete <session-id> [<session-id> ...]
 recon purge  --older-than-days N [--dry-run]
+
+recon crack   [--hash HASH ...] [--hash-file FILE]
+              [--wordlist PATH] [--algorithm {auto,md5,sha1,sha224,sha256,sha384,sha512,ntlm}]
+              [--salt SALT] [--rules]
+              [--brute-force --charset CHARS --min-length N --max-length N]
+              [--timeout SECS] [--max-candidates N] [--target-label NAME]
 
 recon encrypt [<session-id|path> ...] [--all | --older-than-days N]
               [--password-file FILE] [--output-dir DIR] [--keep]
@@ -292,6 +299,74 @@ sessions when `RECON_PASSWORD` is set, so `recon diff` and
   `recon encrypt <session-id>` but are not yet covered by the
   always-on `save_session` path. Run `recon encrypt --all`
   periodically to sweep them up.
+
+## Password hash audits
+
+`recon crack` walks a wordlist (and optionally a bounded brute-force
+charset) against one or more hashes to flag weak credentials during an
+authorised password-policy audit. Everything runs on the standard
+library - `hashlib` for raw digests, `crypt(3)` for Unix `$id$` entries
+when the platform still ships it. No hashcat, no John, no GPU.
+
+```bash
+# One-off hash, auto-detected as MD5 by its 32-char length
+python3 recon.py crack \
+    --hash 5f4dcc3b5aa765d61d8327deb882cf99 \
+    --wordlist config/wordlists/subdomains.txt
+
+# A shadow-style file with salted crypt entries, plus mangling rules
+python3 recon.py crack \
+    --hash-file /tmp/shadow.txt \
+    --wordlist rockyou.txt --rules
+
+# Fall back to brute force after the wordlist is exhausted
+python3 recon.py crack \
+    --hash $(echo -n 42 | sha1sum | awk '{print $1}') \
+    --brute-force --charset 0123456789 --max-length 3
+```
+
+Accepted hash-file line formats (one per line, `#` starts a comment):
+
+| Form                              | Example                                         |
+|-----------------------------------|-------------------------------------------------|
+| Bare hex hash                     | `5f4dcc3b5aa765d61d8327deb882cf99`              |
+| Labeled hash                      | `alice:5f4dcc3b5aa765d61d8327deb882cf99`        |
+| Labeled hash + salt               | `bob:5ebe2294ecd0e0f08eab7690d2a6ee69:NaCl`     |
+| `/etc/shadow`-style crypt entry   | `root:$6$salt$digest:19000:0:99999:7:::`        |
+| Bare crypt entry                  | `$1$salt$digest`                                |
+
+Supported algorithms are auto-detected by length (`md5`, `sha1`,
+`sha224`, `sha256`, `sha384`, `sha512`). Unix crypt entries are
+identified from their `$id$` prefix (`$1$` md5crypt, `$5$` sha256crypt,
+`$6$` sha512crypt, `$2[aby]$` bcrypt) and delegated to the stdlib
+`crypt` module when present; on Python 3.13+ and Windows those hashes
+are parsed and surfaced as `uncracked` with a `reason` instead. NTLM
+hashes share a length with MD5, so select them explicitly with
+`--algorithm ntlm`. Salts from `--salt` or per-line `label:hash:salt`
+are tried in both append and prepend positions without extra
+configuration.
+
+The rule set (`--rules`) is intentionally compact: each wordlist entry
+is combined with lower/upper/capitalize/reverse variants and a small
+set of trailing tokens (`!`, `1`, `123`, `!@#`, recent years), which
+catches the typical `Summer2025!` policy bypass without exploding a
+large dictionary. Brute force is capped at eight characters and
+supports `--min-length`, `--max-length`, `--timeout`, and
+`--max-candidates` as guard rails so a bad charset cannot run away
+with the machine.
+
+Every run persists a regular session under `results/` with
+`scan_type = "crack"`, so `recon list`, the dashboard sidebar, the
+encrypt/decrypt commands and the markdown/HTML/CSV exporters all keep
+working. Set `RECON_PASSWORD` before invoking `recon crack` to
+auto-encrypt the results on save - handy because a cracked-password
+report is precisely the sort of thing you do not want plaintext on a
+USB drive.
+
+> Authorised use only. `recon crack` exists to let operators report
+> weak credentials during pentests, red-team engagements, and CTF
+> practice. Only run it against hashes you own or have written
+> permission to test.
 
 ## Configuration file
 

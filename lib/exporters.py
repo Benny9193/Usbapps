@@ -92,6 +92,32 @@ def to_markdown(session_ref):
             lines.append(f"- **{k}**: {v}")
         lines.append("")
 
+    crack = s.get("crack") or {}
+    if crack and not crack.get("error"):
+        lines.append("## Password audit")
+        lines.append(f"- Targets: {crack.get('targets', 0)}")
+        lines.append(f"- Cracked: {len(crack.get('cracked') or [])}")
+        lines.append(f"- Candidates tested: {crack.get('tested', 0)}")
+        lines.append(f"- Elapsed: {crack.get('elapsed_seconds', 0)}s")
+        lines.append(f"- Stopped: {crack.get('stopped_reason', '-')}")
+        if crack.get("cracked"):
+            lines.append("")
+            lines.append("| Label | Algorithm | Password |")
+            lines.append("|-------|-----------|----------|")
+            for c in crack["cracked"]:
+                lines.append(
+                    f"| {c.get('label') or '-'} | {c.get('algo', '-')} | "
+                    f"`{c.get('password', '')}` |"
+                )
+        if crack.get("uncracked"):
+            lines.append("")
+            lines.append(f"### Uncracked ({len(crack['uncracked'])})")
+            for u in crack["uncracked"]:
+                tag = u.get("label") or (u.get("hash") or "?")[:16]
+                reason = f" - {u['reason']}" if u.get("reason") else ""
+                lines.append(f"- {tag} ({u.get('algo', '?')}){reason}")
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -181,6 +207,36 @@ def to_html(session_ref):
             out.write(f"<tr><td>{esc(str(k))}</td><td>{esc(str(v))}</td></tr>")
         out.write("</table>")
 
+    crack = s.get("crack") or {}
+    if crack and not crack.get("error"):
+        out.write("<h2>Password audit</h2>")
+        out.write(
+            f"<p class='meta'>Targets: {crack.get('targets', 0)} &middot; "
+            f"Cracked: {len(crack.get('cracked') or [])} &middot; "
+            f"Tested: {crack.get('tested', 0)} &middot; "
+            f"Elapsed: {esc(str(crack.get('elapsed_seconds', 0)))}s &middot; "
+            f"Stopped: {esc(str(crack.get('stopped_reason', '-')))}</p>"
+        )
+        if crack.get("cracked"):
+            out.write("<table><tr><th>Label</th><th>Algorithm</th><th>Password</th></tr>")
+            for c in crack["cracked"]:
+                out.write(
+                    f"<tr><td>{esc(str(c.get('label') or '-'))}</td>"
+                    f"<td>{esc(str(c.get('algo', '-')))}</td>"
+                    f"<td><code>{esc(str(c.get('password', '')))}</code></td></tr>"
+                )
+            out.write("</table>")
+        if crack.get("uncracked"):
+            out.write(f"<h3>Uncracked ({len(crack['uncracked'])})</h3><ul>")
+            for u in crack["uncracked"]:
+                tag = u.get("label") or (u.get("hash") or "?")[:16]
+                reason = f" &mdash; {esc(str(u['reason']))}" if u.get("reason") else ""
+                out.write(
+                    f"<li><code>{esc(str(tag))}</code> "
+                    f"({esc(str(u.get('algo', '?')))}){reason}</li>"
+                )
+            out.write("</ul>")
+
     out.write("</body></html>")
     return out.getvalue()
 
@@ -224,6 +280,20 @@ def to_csv(session_ref):
         if isinstance(v, list):
             v = ", ".join(v)
         w.writerow(["whois", k, "", v])
+
+    crack = s.get("crack") or {}
+    for c in (crack.get("cracked") or []):
+        w.writerow([
+            "crack", "cracked",
+            c.get("label") or "",
+            f"{c.get('algo', '')}|{c.get('password', '')}",
+        ])
+    for u in (crack.get("uncracked") or []):
+        w.writerow([
+            "crack", "uncracked",
+            u.get("label") or (u.get("hash") or "")[:16],
+            f"{u.get('algo', '')}|{u.get('reason', '')}",
+        ])
 
     return out.getvalue()
 
