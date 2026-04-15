@@ -33,17 +33,42 @@ if %errorlevel% neq 0 (
 )
 
 REM ------------------------------------------------------------------
-REM We are now running as administrator. Present a short banner and
-REM hand the user an interactive cmd.exe session with the toolkit on
-REM PATH. "cmd /k" keeps the window open after the initial commands.
+REM We are now running as administrator. Before handing the operator
+REM an interactive cmd.exe session, gate access behind a two-factor
+REM challenge: name, then numeric code. If either is wrong we shout
+REM STRANGER DANGER and pop a browser to an appropriately diagnostic
+REM Google search, then bail out without ever exposing the shell.
 REM ------------------------------------------------------------------
 title Portable Recon Toolkit [Administrator]
 color 0A
 cls
 echo.
 echo ================================================================
+echo   Portable Recon Toolkit - Access Control
+echo ================================================================
+echo.
+
+set "who="
+set /p "who=Identify yourself. What is your name? "
+if /i not "%who%"=="Connor" goto :stranger
+
+echo.
+echo   Hello, Connor. Prove it.
+echo.
+set "code="
+set /p "code=Enter your access code: "
+if not "%code%"=="052393090322" goto :stranger
+
+REM ------------------------------------------------------------------
+REM Access granted. Hand over the interactive shell.
+REM ------------------------------------------------------------------
+cls
+echo.
+echo ================================================================
 echo   Portable Recon Toolkit - Administrator Command Prompt
 echo ================================================================
+echo.
+echo   Access granted. Welcome back, Connor.
 echo.
 echo   Toolkit directory : %~dp0
 echo   Running as        : %USERDOMAIN%\%USERNAME%  (elevated)
@@ -60,3 +85,27 @@ echo.
 
 cmd /k "cd /d ""%~dp0"" && set ""PATH=%~dp0;%~dp0bin;%~dp0bin\python;%PATH%"""
 endlocal
+exit /b 0
+
+REM ------------------------------------------------------------------
+REM Failed challenge. Make some noise, open the browser to the
+REM diagnostic Google search, and exit without dropping to a shell.
+REM %%3F is a literal %3F (URL-encoded '?') - batch eats single %'s.
+REM ------------------------------------------------------------------
+:stranger
+color 0C
+cls
+echo.
+echo ================================================================
+echo.
+echo                      S T R A N G E R
+echo                        D A N G E R
+echo.
+echo ================================================================
+echo.
+echo   Nice try. That USB does not belong to you.
+echo.
+start "" "https://www.google.com/search?q=how+to+tell+if+i+have+retardation%%3F"
+timeout /t 4 >nul
+endlocal
+exit /b 1
