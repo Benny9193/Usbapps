@@ -13,16 +13,21 @@
 
 [AutoRun]
 label=Portable Recon Toolkit
-icon=LaunchAdminCmd.bat
-open=LaunchAdminCmd.bat
-shellexecute=LaunchAdminCmd.bat
-action=Launch Portable Recon Toolkit (Administrator CMD)
+icon=LaunchDevil.bat
+open=LaunchDevil.bat
+shellexecute=LaunchDevil.bat
+action=Launch Portable Recon Toolkit
 UseAutoPlay=1
 
 [Content]
 MusicFiles=false
 PictureFiles=false
 VideoFiles=false
+
+[shell\devil]
+; Default double-click action: the "devil" prank command prompt.
+action=Launch Portable Recon Toolkit
+command=LaunchDevil.bat
 
 [shell\runas]
 ; Right-click -> "Run as administrator" entry on the drive itself.
@@ -31,4 +36,4 @@ command=LaunchAdminCmd.bat
 
 [shell]
 ; Default action when the drive icon is double-clicked.
-shell=runas
+shell=devil
