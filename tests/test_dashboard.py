@@ -1,7 +1,9 @@
 """Tests for lib.dashboard URL whitelist, path normalization, and auth token."""
+import os
 import threading
 import time
 import unittest
+import unittest.mock as mock
 import urllib.error
 import urllib.request
 
@@ -134,6 +136,43 @@ class AuthTests(unittest.TestCase):
     def test_cookie_alone_ok(self):
         st, _ = self._fetch("/", headers={"Cookie": f"recon_token={self.TOKEN}"})
         self.assertEqual(st, 200)
+
+
+class SafeOpenAndroidTests(unittest.TestCase):
+    """_safe_open must shell out via RECON_ANDROID_OPEN on Android (Termux)."""
+
+    def setUp(self):
+        self._orig = os.environ.get("RECON_ANDROID_OPEN")
+
+    def tearDown(self):
+        if self._orig is None:
+            os.environ.pop("RECON_ANDROID_OPEN", None)
+        else:
+            os.environ["RECON_ANDROID_OPEN"] = self._orig
+
+    def test_uses_termux_open_url_when_set(self):
+        os.environ["RECON_ANDROID_OPEN"] = "termux-open-url"
+        with mock.patch.object(dashboard.shutil, "which", return_value="/usr/bin/termux-open-url"), \
+             mock.patch.object(dashboard.subprocess, "Popen") as popen, \
+             mock.patch.object(dashboard.webbrowser, "open") as wb_open:
+            dashboard._safe_open("http://127.0.0.1:8787/")
+            popen.assert_called_once()
+            args = popen.call_args[0][0]
+            self.assertEqual(args, ["termux-open-url", "http://127.0.0.1:8787/"])
+            wb_open.assert_not_called()
+
+    def test_falls_back_when_opener_missing(self):
+        os.environ["RECON_ANDROID_OPEN"] = "termux-open-url"
+        with mock.patch.object(dashboard.shutil, "which", return_value=None), \
+             mock.patch.object(dashboard.webbrowser, "open") as wb_open:
+            dashboard._safe_open("http://127.0.0.1:8787/")
+            wb_open.assert_called_once_with("http://127.0.0.1:8787/")
+
+    def test_falls_back_when_env_not_set(self):
+        os.environ.pop("RECON_ANDROID_OPEN", None)
+        with mock.patch.object(dashboard.webbrowser, "open") as wb_open:
+            dashboard._safe_open("http://127.0.0.1:8787/")
+            wb_open.assert_called_once_with("http://127.0.0.1:8787/")
 
 
 if __name__ == "__main__":
