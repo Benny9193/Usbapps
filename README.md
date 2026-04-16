@@ -20,6 +20,8 @@ Usbapps/
   LaunchAdminCmd.bat  Self-elevating admin command prompt launcher
   autorun.inf         Windows AutoPlay descriptor (opens admin CMD)
   launch.sh           Linux / macOS launcher
+  setup_android.sh    Termux one-time setup (installs python, nmap, termux-api)
+  launch_android.sh   Android / Termux launcher (dashboard + CLI wrapper)
   recon.py            CLI entry point
   lib/                Toolkit modules (stdlib-only Python)
     nmap_runner.py    Nmap wrapper + rich XML parser (archives raw XML)
@@ -110,6 +112,72 @@ You can also invoke the Python entry point directly:
 python3 recon.py dashboard
 python3 recon.py full example.com
 ```
+
+### Android (Termux)
+
+The toolkit runs on any Android 7+ phone or tablet through
+[Termux](https://termux.dev). Nothing is ported or rewritten - Termux ships
+a real CPython build and a package manager, so the same stdlib-only codebase
+that runs on Windows and Linux runs unmodified on your phone.
+
+1. **Install Termux from F-Droid** (the Play Store build is abandoned and
+   will not work):
+   - Termux - <https://f-droid.org/en/packages/com.termux/>
+   - Termux:API - <https://f-droid.org/en/packages/com.termux.api/> *(optional,
+     enables one-tap browser opening of the dashboard)*
+2. **Copy the toolkit onto the device.** Any of these works:
+   ```bash
+   # Clone straight from GitHub (easiest)
+   pkg install git
+   git clone https://github.com/Benny9193/usbapps.git
+   cd usbapps
+
+   # Or adb push from a computer
+   adb push Usbapps /sdcard/Download/Usbapps
+   termux-setup-storage                       # grant Termux access to /sdcard
+   cp -r ~/storage/downloads/Usbapps ~/Usbapps
+   cd ~/Usbapps
+   ```
+3. **Run the one-time setup script.** It installs Python, Nmap, and (unless
+   you pass `--minimal`) the `termux-api` bridge:
+   ```bash
+   chmod +x setup_android.sh launch_android.sh
+   ./setup_android.sh
+   ```
+4. **Launch the dashboard or run a scan:**
+   ```bash
+   ./launch_android.sh                                         # dashboard @ http://127.0.0.1:8787/
+   ./launch_android.sh scan 10.0.0.1 --profile quick
+   ./launch_android.sh dns example.com
+   ./launch_android.sh full example.com \
+       --wordlist config/wordlists/subdomains.txt
+   ```
+
+With `termux-api` installed, `launch_android.sh` auto-opens the dashboard in
+Android's default browser via `termux-open-url`. Without it, point your
+browser manually at `http://127.0.0.1:8787/` while the launcher keeps
+running in Termux.
+
+#### Android caveats
+
+- **No root, no SYN scans.** Termux runs as an unprivileged Android user, so
+  the `stealth` profile (`-sS`) will fail. Stick to `quick`, `default`,
+  `full`, or `service`, which use TCP connect scans. The built-in
+  `--no-nmap` pure-Python fallback also works and needs no root.
+- **Battery optimisation.** Android may kill Termux when backgrounded.
+  Long-running dashboards or the scheduler daemon should use Termux's
+  persistent-notification wake-lock (`termux-wake-lock`), and you should
+  whitelist Termux in your phone's battery settings.
+- **Storage.** By default results land in `~/Usbapps/results/` on Termux's
+  private partition. If you want them visible to other Android apps, run
+  `termux-setup-storage` and symlink `results/` under `~/storage/shared/`.
+- **Scoped networking on modern Android.** The dashboard is bound to
+  `127.0.0.1` so only apps running on the device can reach it. Do not
+  publish it to `0.0.0.0` on a carrier or public Wi-Fi network without
+  also passing `--auth`.
+- **Chroot alternatives.** The same `launch_android.sh` script also works
+  inside Andronix, UserLAnd, or Kali-NetHunter chroots: it falls back to
+  the system `python3` when Termux's `$PREFIX` isn't set.
 
 ---
 

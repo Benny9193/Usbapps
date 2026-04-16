@@ -1,7 +1,10 @@
 """Minimal HTTP server that serves the dashboard assets and result JSON."""
 import http.server
+import os
 import posixpath
 import secrets
+import shutil
+import subprocess
 import threading
 import urllib.parse
 import webbrowser
@@ -230,6 +233,26 @@ def serve(host="127.0.0.1", port=8787, open_browser=True, token=None,
 
 
 def _safe_open(url):
+    # On Android (Termux), the stdlib webbrowser module cannot reach the
+    # system browser because the Termux sandbox has no $DISPLAY and no
+    # X-session. The launch_android.sh wrapper exports RECON_ANDROID_OPEN
+    # (usually "termux-open-url") so we can shell out to the termux-api
+    # bridge instead. Fall back to webbrowser.open on any failure so
+    # desktop users keep getting a seamless experience.
+    opener = os.environ.get("RECON_ANDROID_OPEN")
+    if opener:
+        cmd = opener.split()
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.Popen(
+                    cmd + [url],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+                return
+            except Exception:
+                pass
     try:
         webbrowser.open(url)
     except Exception:
