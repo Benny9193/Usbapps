@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A little surprise</title>
+<style>
+  @page { margin: 0.5in; }
+  html, body { margin: 0; padding: 0; background: #f4f1ec; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 Helvetica, Arial, sans-serif;
+    color: #2d2420;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+    box-sizing: border-box;
+  }
+  .card {
+    width: 420px;
+    max-width: 100%;
+    background: #ffffff;
+    border-radius: 18px;
+    box-shadow: 0 8px 40px rgba(60, 40, 20, 0.12);
+    padding: 40px 36px 32px 36px;
+    text-align: center;
+    border: 1px solid #efe6db;
+  }
+  .eyebrow {
+    font-size: 12px;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: #a8673d;
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  h1 {
+    margin: 0 0 10px 0;
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  p.sub {
+    margin: 0 0 26px 0;
+    font-size: 15px;
+    color: #6b5b4e;
+    line-height: 1.5;
+  }
+  .qr-wrap {
+    display: inline-block;
+    padding: 18px;
+    background: #fff;
+    border: 1px solid #efe6db;
+    border-radius: 12px;
+  }
+  .qr-wrap img {
+    display: block;
+    width: 260px;
+    height: 260px;
+  }
+  .hint {
+    margin: 22px 0 0 0;
+    font-size: 13px;
+    color: #a89687;
+    line-height: 1.5;
+  }
+  .heart { color: #c44545; }
+  @media print {
+    body { background: #ffffff; }
+    .card { box-shadow: none; border: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="eyebrow">For you</div>
+    <h1>Scan me <span class="heart">&#9825;</span></h1>
+    <p class="sub">Point your phone camera here.</p>
+    <div class="qr-wrap">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAtAAAALQAQMAAACDmdXfAAAABlBMVEUtJCD///+KmK/PAAAC9UlEQVR42u3dy2rkMBAFUDP//8+ZRWhcLzckmVIWcwwJ2G2fhRaXoixL18facaHRaDQajUaj0Wg0Go1Go9FoNBr9Y/pKx33++dvr/3W97k5Iefbz+HOtHWg0Gv3/0SGvY/7eGZ3vuBM8n+Vn5TUajUbv5vVdW8eaOedwfCZX3vez8hqNRqPP5XX+H6vunNHyGo1Go387r3MFXfsgvX8ir9FoNPp3+9dTlyS+adS/RqPR6LN5na9+7W8SjTUajUZv5HWb6Ncq6twTqTP8+mGs0Wg0eiuva23dZ4DUPkmdp62+RqPR6P1+yDTvus7/eKq24xV5jUaj0fv1da2R85Wa4rmujvW3vEaj0ejN+jp2RHL69jnX9e4+y8RYo9Fo9E5exy8Ye99jyuheV8trNBqNPpHX8/lztzpndO2vGGs0Go3eyOv+trH3tnNuTz2TKBprNBqN3qmve07HGjqvqTrV1vohaDQaffZ7mVw717N3byb1Q9BoNPpUfV3XBXmup6c3jL5vRKPR6HP9kF4z9yp7znP9azQajT75vnGqsWvvuvezp1X+jDUajUbv5PVUZfcc7h3svheNvEaj0ejtfsi0l27fHyxW189PGms0Go3eyeupan7aUWaaD1JFY41Go9E7/ZBYNfe75hVEpj145TUajUbv5vU0D6Tvg57r7qe9ZeQ1Go1G7/VDavVcK+t5rb7pDnmNRqPRu3k9J/a8JtS8W0G821ij0Wj0Xl5P8/f6O8V5hl/toRhrNBqN3u6HPH3BOM0kiVLOdmONRqPRG3k9749e51ZPs/im+lxeo9Fo9F593a/Oq0HF+rq+p4yisUaj0eitfsj77nXug/QUr88aazQajd7K69eVdys6zd/TxM6JvEaj0eizeV07HtOeYc+zQ+Q1Go1Gn6uv79/f9U/q1+ryGo1Go7fzetpb977rqaudV4OS12g0Gr2d1/VqXem6zwSZ18GW12g0Gr2Z1//+QKPRaDQajUaj0Wg0Go1Go9FoNPrbx18z+Xy5CH2xgwAAAABJRU5ErkJggg==" alt="QR code">
+    </div>
+    <p class="hint">
+      Tap the notification that pops up to open the surprise.
+    </p>
+  </div>
+</body>
+</html>
